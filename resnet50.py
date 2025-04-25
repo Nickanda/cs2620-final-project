@@ -229,7 +229,7 @@ def resnet50(pretrained=False, num_classes=1000, include_top=True, pooling=None)
 
 # Example usage:
 if __name__ == "__main__":
-    model = resnet101(pretrained=False)
+    model = resnet50(pretrained=False)
     x = torch.randn(1, 3, 224, 224)
     logits = model(x)
     print(
