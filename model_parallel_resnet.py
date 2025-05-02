@@ -229,6 +229,9 @@ class FaultTolerantModelParallelResNet(nn.Module):
 
     def _heartbeat_loop(self):
         """Loop to send and monitor heartbeats"""
+        error_count = 0
+        max_errors = 10
+        
         while True:
             try:
                 # Send heartbeat
@@ -237,7 +240,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
                     if self.is_leader:
                         heartbeat = torch.tensor(
                             [time.time(), self.rank], dtype=torch.float
-                        )
+                        ).cuda()  # Fixed the typo "cu" here
                         dist.broadcast(heartbeat, src=self.rank)
 
                     # Process leader failures and trigger failover if needed
@@ -268,14 +271,23 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 for stage_idx, stage in enumerate(self.stage_config):
                     leader_rank = stage["leader"]["rank"]
                     if leader_rank != self.rank:  # Don't need to record own heartbeat
-                        heartbeat = torch.zeros(2, dtype=torch.float)
+                        heartbeat = torch.zeros(2, dtype=torch.float).cuda()
                         dist.broadcast(heartbeat, src=leader_rank)
                         self.last_heartbeats[leader_rank] = heartbeat[0].item()
 
+                # Reset error count after successful execution
+                error_count = 0
                 time.sleep(self.heartbeat_interval)
 
             except Exception as e:
-                logger.error(f"Rank {self.rank}: Error in heartbeat loop: {str(e)}")
+                error_count += 1
+                logger.error(f"Rank {self.rank}: Error in heartbeat loop: {str(e)} (Error count: {error_count}/{max_errors})")
+                
+                # Exit loop if error threshold is reached
+                if error_count >= max_errors:
+                    logger.critical(f"Rank {self.rank}: Heartbeat loop exiting after {max_errors} consecutive errors")
+                    break
+                    
                 time.sleep(self.heartbeat_interval)
 
     def _handle_leader_failure(self, stage_idx):
@@ -454,7 +466,11 @@ class FaultTolerantModelParallelResNet(nn.Module):
             # Send output to stage 1 leader
             if dist.is_initialized() and self.current_stage_leaders[1] != self.rank:
                 # Send tensor to next stage's leader
-                dist.send(x, dst=self.current_stage_leaders[1])
+                # dist.send(x, dst=self.current_stage_leaders[1])
+                # first send its shape, then the data
+                tensor_sizes = torch.tensor(list(x.shape), dtype=torch.long)
+                dist.send(tensor_sizes, dst=self.current_stage_leaders[1])
+                dist.send(x,            dst=self.current_stage_leaders[1])
 
         # Stage 1: Layer 1
         if 1 in self.my_stages:
@@ -464,7 +480,14 @@ class FaultTolerantModelParallelResNet(nn.Module):
                     0 not in self.my_stages
                     or self.current_stage_leaders[0] != self.rank
                 ):
-                    x = torch.zeros_like(stage_outputs.get(0, x))
+                    # x = torch.zeros_like(stage_outputs.get(0, x))
+                    # dist.recv(x, src=self.current_stage_leaders[0])
+                    # receive shape
+                    tensor_sizes = torch.zeros(4, dtype=torch.long)
+                    dist.recv(tensor_sizes, src=self.current_stage_leaders[0])
+                    x = torch.zeros(tuple(tensor_sizes.tolist()),
+                        dtype=torch.float,
+                    ).to(self.stage_devices[1])
                     dist.recv(x, src=self.current_stage_leaders[0])
 
                 # Process layer 1
@@ -478,6 +501,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 if dist.is_initialized() and self.current_stage_leaders[2] != self.rank:
                     dist.send(x, dst=self.current_stage_leaders[2])
 
+                
         # Stage 2: Layer 2
         if 2 in self.my_stages:
             if self.current_stage_leaders[2] == self.rank:
@@ -490,7 +514,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
                     # with proper shape after receiving from previous stage
                     if dist.is_initialized():
                         # Receive tensor size first
-                        tensor_sizes = torch.zeros(4, dtype=torch.long)
+                        tensor_sizes = torch.zeros(4, dtype=torch.long).cuda()
                         dist.recv(tensor_sizes, src=self.current_stage_leaders[1])
 
                         # Create empty tensor with right size
@@ -527,7 +551,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 ):
                     if dist.is_initialized():
                         # Receive tensor size first
-                        tensor_sizes = torch.zeros(4, dtype=torch.long)
+                        tensor_sizes = torch.zeros(4, dtype=torch.long).cuda()
                         dist.recv(tensor_sizes, src=self.current_stage_leaders[2])
 
                         # Create empty tensor with right size
@@ -564,7 +588,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 ):
                     if dist.is_initialized():
                         # Receive tensor size first
-                        tensor_sizes = torch.zeros(4, dtype=torch.long)
+                        tensor_sizes = torch.zeros(4, dtype=torch.long).cuda()
                         dist.recv(tensor_sizes, src=self.current_stage_leaders[3])
 
                         # Create empty tensor with right size

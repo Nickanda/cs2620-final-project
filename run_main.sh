@@ -1,34 +1,62 @@
-export MASTER_ADDR=10.31.144.218
-export MASTER_PORT=29502
+#!/usr/bin/env bash
+# run_main.sh  –  start two independent Python processes, one per GPU,
+#                 on a single machine, no torchrun.
 
-# (in bash, after setting MASTER_ADDR/PORT and the IFNAME vars)
-# Rank 0 → GPU 0
-CUDA_VISIBLE_DEVICES=0 python main.py \
-  --mode train --rank 0 --world-size 4 \
-  --master-addr $MASTER_ADDR --master-port $MASTER_PORT \
-  --batch-size 32 --epochs 10 &
+set -e                                  # stop on the first error
 
-# Rank 1 → GPU 1
-CUDA_VISIBLE_DEVICES=1 python main.py \
-  --mode train --rank 1 --world-size 4 \
-  --master-addr $MASTER_ADDR --master-port $MASTER_PORT \
-  --batch-size 32 --epochs 10 &
+# ───────── rendez-vous TCP store (must be reachable by both ranks) ────
+export MASTER_ADDR=10.31.180.212
+export MASTER_PORT=29503                # pick an unused port
 
-# Rank 2 → GPU 2
-CUDA_VISIBLE_DEVICES=2 python main.py \
-  --mode train --rank 2 --world-size 4 \
-  --master-addr $MASTER_ADDR --master-port $MASTER_PORT \
-  --batch-size 32 --epochs 10 &
+# ───────── common variables (identical for *all* ranks) ───────────────
+export WORLD_SIZE=1                     # total number of ranks
 
-# Rank 3 → GPU 3
-CUDA_VISIBLE_DEVICES=3 python main.py \
-  --mode train --rank 3 --world-size 4 \
-  --master-addr $MASTER_ADDR --master-port $MASTER_PORT \
-  --batch-size 32 --epochs 10 &
+# (optional safety) tell NCCL to stay on TCP and avoid IB until things work
+# export NCCL_IB_DISABLE=1
 
-wait
+# ───────── Rank 0  →  GPU 0 ───────────────────────────────────────────
+RANK=0 LOCAL_RANK=0 CUDA_VISIBLE_DEVICES=0 \
+  python main.py \
+    --mode train --rank 0 --world-size 1 \
+    --master-addr "$MASTER_ADDR" --master-port "$MASTER_PORT" \
+    --batch-size 32 --epochs 5 &
 
-python main.py \
-  --mode train --rank 0 --world-size 1 \
-  --master-addr 10.31.144.218 --master-port 29502 \
-  --batch-size 64 --epochs 10
+# ───────── Rank 1  →  GPU 1 ───────────────────────────────────────────
+RANK=1 LOCAL_RANK=1 CUDA_VISIBLE_DEVICES=1 \
+  python main.py \
+    --mode train --rank 1 --world-size 2 \
+    --master-addr "$MASTER_ADDR" --master-port "$MASTER_PORT" \
+    --batch-size 32 --epochs 5 &
+
+wait   # suspends this shell until both background jobs finish
+
+# # (in bash, after setting MASTER_ADDR/PORT and the IFNAME vars)
+# # Rank 0 → GPU 0
+# CUDA_VISIBLE_DEVICES=0 python main.py \
+#   --mode train --rank 0 --world-size 2 \
+#   --master-addr $MASTER_ADDR --master-port $MASTER_PORT \
+#   --batch-size 32 --epochs 10 &
+
+# # Rank 1 → GPU 1
+# CUDA_VISIBLE_DEVICES=1 python main.py \
+#   --mode train --rank 1 --world-size 2 \
+#   --master-addr $MASTER_ADDR --master-port $MASTER_PORT \
+#   --batch-size 32 --epochs 10 &
+
+# waitR=10.31.180.213
+# export MASTER_PORT=29502
+
+# # (in bash, after setting MASTER_ADDR/PORT and the IFNAME vars)
+# # Rank 0 → GPU 0
+# CUDA_VISIBLE_DEVICES=0 python main.py \
+#   --mode train --rank 0 --world-size 2 \
+#   --master-addr $MASTER_ADDR --master-port $MASTER_PORT \
+#   --batch-size 32 --epochs 10 &
+
+# # Rank 1 → GPU 1
+# CUDA_VISIBLE_DEVICES=1 python main.py \
+#   --mode train --rank 1 --world-size 2 \
+#   --master-addr $MASTER_ADDR --master-port $MASTER_PORT \
+#   --batch-size 32 --epochs 10 &
+
+# wait

@@ -5,7 +5,7 @@ import socket
 addresses = [
     # "127.0.0.1",        # loopback (always available for single‐node, multi‐process)
     "10.31.144.218",    # your em2 (Ethernet) address
-    "10.31.180.218",    # your ib0 (InfiniBand) address
+    "10.31.180.184",    # your ib0 (InfiniBand) address
 ]
 
 
