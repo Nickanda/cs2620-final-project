@@ -37,8 +37,8 @@ class FaultTolerantModelParallelResNet(nn.Module):
             pooling: Optional pooling mode when include_top is False (avg or max).
             stage_config: Configuration for fault tolerance with leader and backup machines.
                 Format: [
-                    {'leader': {'rank': 0, 'device': 'cuda:0'}, 'backups': [{'rank': 1, 'device': 'cuda:0'}]},
-                    {'leader': {'rank': 2, 'device': 'cuda:0'}, 'backups': [{'rank': 3, 'device': 'cuda:0'}]},
+                    {'leader': {'rank': 0, 'device': 'mps'}, 'backups': [{'rank': 1, 'device': 'mps'}]},
+                    {'leader': {'rank': 2, 'device': 'mps'}, 'backups': [{'rank': 3, 'device': 'mps'}]},
                     ...
                 ]
             checkpoint_dir: Directory to save/load model checkpoints for fault recovery.
@@ -385,7 +385,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
             self.checkpoint_dir, f"stage_{stage_idx}_checkpoint.pt"
         )
         torch.save(checkpoint, checkpoint_path)
-        logger.info(f"Rank {self.rank}: Saved checkpoint for stage {stage_idx}")
+        # logger.info(f"Rank {self.rank}: Saved checkpoint for stage {stage_idx}")
 
     def _load_stage_checkpoint(self, stage_idx):
         """Load checkpoint for a specific stage"""
@@ -600,7 +600,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
         # Only return a value if we're the leader of the final stage
         if 4 in self.my_stages and self.current_stage_leaders[4] == self.rank:
             # Save checkpoint after successful forward pass
-            self._save_stage_checkpoint(4)
+            # self._save_stage_checkpoint(4)
             return x
 
         # If we get here, we're not responsible for the final output

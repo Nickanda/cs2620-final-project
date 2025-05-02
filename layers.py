@@ -37,10 +37,6 @@ class Bottleneck(nn.Module):
         # Specify device if provided
         self.device = device
 
-        # Move module to specified device if provided
-        if device is not None:
-            self.to(device)
-
         # 1x1 conv branch
         self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
         self.bn1 = nn.BatchNorm2d(planes, eps=eps)
@@ -63,6 +59,10 @@ class Bottleneck(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.downsample = downsample
         self.stride = stride
+
+        # Move module to specified device if provided
+        if device is not None:
+            self.to(device)
 
     def forward(self, x):
         # Move input to this module's device if needed
