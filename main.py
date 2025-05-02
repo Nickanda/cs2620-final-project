@@ -3,8 +3,6 @@
 
 import os
 import time
-import signal
-import socket
 import argparse
 import torch
 import torch.nn as nn
