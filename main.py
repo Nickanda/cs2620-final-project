@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+from tqdm import tqdm
 
 # Import local modules
 from fault_tolerant_distributed import (
@@ -77,7 +78,15 @@ if __name__ == "__main__":
         )
 
     # Set device and create model with fault tolerance
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # Check for MPS (Metal Performance Shaders) on Apple Silicon
+    if torch.backends.mps.is_available():
+        device = torch.device("mps")
+    elif torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
+    logger.info(f"Using device: {device}")
 
     # Create stage configuration for fault tolerance
     stage_config = get_fault_tolerant_stage_config(args.world_size)
@@ -128,7 +137,9 @@ if __name__ == "__main__":
         if model.is_leader:
             # Set up optimizer and criterion
             optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.9)
-            criterion = nn.CrossEntropyLoss()
+            criterion = nn.CrossEntropyLoss().to(device)
+            # Ensure model is on the correct device
+            model = model.to(device)
 
             # Training loop
             for epoch in range(args.epochs):
@@ -137,7 +148,10 @@ if __name__ == "__main__":
                 correct = 0
                 total = 0
 
-                for batch_idx, (data, target) in enumerate(train_loader):
+                progress_bar = tqdm(
+                    train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}", leave=True
+                )
+                for batch_idx, (data, target) in enumerate(progress_bar):
                     # Simulate failure if requested
                     if (
                         args.simulate_failure
