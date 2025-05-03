@@ -19,14 +19,14 @@ RANK=0 LOCAL_RANK=0 CUDA_VISIBLE_DEVICES=0 \
   python main.py \
     --mode train --rank 0 --world-size 2 \
     --master-addr "$MASTER_ADDR" --master-port "$MASTER_PORT" \
-    --batch-size 32 --epochs 5 &
+    --batch-size 32 --epochs 3 &
 
 # ───────── Rank 1  →  GPU 1 ───────────────────────────────────────────
 RANK=1 LOCAL_RANK=1 CUDA_VISIBLE_DEVICES=1 \
   python main.py \
     --mode train --rank 1 --world-size 2 \
     --master-addr "$MASTER_ADDR" --master-port "$MASTER_PORT" \
-    --batch-size 32 --epochs 5 &
+    --batch-size 32 --epochs 3 &
 
 wait   # suspends this shell until both background jobs finish
 
