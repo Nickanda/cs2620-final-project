@@ -9,7 +9,12 @@ export NCCL_SOCKET_IFNAME=ib0  # Or eth0 on Linux
 export GLOO_SOCKET_IFNAME=ib0  # Same as above
 export NCCL_IB_DISABLE=1
 export MASTER_ADDR=$(hostname -I | awk '{print $2}')
-export MASTER_PORT=29504                # pick an unused port
+export MASTER_PORT=12345                # pick an unused port
+# Add IPv6 disabling flag
+export NCCL_NET_GDR_LEVEL=0
+export NCCL_DEBUG=INFO
+# Force PyTorch to prefer IPv4
+export NCCL_SOCKET_FAMILY=AF_INET
 
 # ───────── common variables (identical for *all* ranks) ───────────────
 export WORLD_SIZE=2                     # total number of ranks
