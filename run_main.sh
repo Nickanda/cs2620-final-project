@@ -3,10 +3,10 @@
 set -e
 
 # Explicitly disable IPv6 for NCCL
-export NCCL_SOCKET_IFNAME=ib0  # Use Ethernet instead of InfiniBand
-export GLOO_SOCKET_IFNAME=ib0
+export NCCL_SOCKET_IFNAME=em2  # Use Ethernet instead of InfiniBand
+export GLOO_SOCKET_IFNAME=em2
 export NCCL_IB_DISABLE=1
-export MASTER_ADDR=$(hostname -I | awk '{print $2}')  # Use first IP address
+export MASTER_ADDR=$(ip -4 addr show em2 | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | head -n1)  # Use first IP address
 export MASTER_PORT=29500
 export NCCL_SOCKET_FAMILY=AF_INET  # Force IPv4 only
 export NCCL_DEBUG=INFO
