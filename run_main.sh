@@ -17,7 +17,7 @@ export WORLD_SIZE=1                     # total number of ranks
 # ───────── Rank 0  →  GPU 0 ───────────────────────────────────────────
 RANK=0 LOCAL_RANK=0 CUDA_VISIBLE_DEVICES=0 \
   python main.py \
-    --mode train --rank 0 --world-size 1 \
+    --mode train --rank 0 --world-size 2 \
     --master-addr "$MASTER_ADDR" --master-port "$MASTER_PORT" \
     --batch-size 32 --epochs 5 &
 
