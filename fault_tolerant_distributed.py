@@ -12,7 +12,7 @@ logger = logging.getLogger("fault_tolerant_resnet")
 
 
 def init_fault_tolerant_distributed(
-    master_addr=None, master_port=None, backend="nccl", timeout_minutes=5
+    master_addr=None, master_port=None, backend="nccl", timeout_minutes=1
 ):
     """Initialize fault-tolerant distributed environment"""
     # Set environment variables for distributed training
