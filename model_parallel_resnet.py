@@ -337,7 +337,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
                     # Broadcast to other ranks that I'm now the leader
                     if dist.is_initialized():
                         status_update = torch.tensor(
-                            [stage_idx, backup_rank], dtype=torch.float
+                            [stage_idx, backup_rank], dtype=torch.float, device="cuda"
                         )
                         for r in range(self.world_size):
                             if r != self.rank:
@@ -474,7 +474,9 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 # Send tensor to next stage's leader
                 # dist.send(x, dst=self.current_stage_leaders[1])
                 # first send its shape, then the data
-                tensor_sizes = torch.tensor(list(x.shape), dtype=torch.long)
+                tensor_sizes = torch.tensor(
+                    list(x.shape), dtype=torch.long, device="cuda"
+                )
                 dist.send(tensor_sizes, dst=self.current_stage_leaders[1])
                 dist.send(x, dst=self.current_stage_leaders[1])
 
@@ -489,7 +491,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
                     # x = torch.zeros_like(stage_outputs.get(0, x))
                     # dist.recv(x, src=self.current_stage_leaders[0])
                     # receive shape
-                    tensor_sizes = torch.zeros(4, dtype=torch.long)
+                    tensor_sizes = torch.zeros(4, dtype=torch.long, device="cuda")
                     dist.recv(tensor_sizes, src=self.current_stage_leaders[0])
                     x = torch.zeros(
                         tuple(tensor_sizes.tolist()),
@@ -541,7 +543,9 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 # Send output to stage 3 leader
                 if dist.is_initialized() and self.current_stage_leaders[3] != self.rank:
                     # Send tensor size first
-                    tensor_sizes = torch.tensor(list(x.shape), dtype=torch.long)
+                    tensor_sizes = torch.tensor(
+                        list(x.shape), dtype=torch.long, device="cuda"
+                    )
                     dist.send(tensor_sizes, dst=self.current_stage_leaders[3])
 
                     # Send actual tensor
@@ -578,7 +582,9 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 # Send output to stage 4 leader
                 if dist.is_initialized() and self.current_stage_leaders[4] != self.rank:
                     # Send tensor size first
-                    tensor_sizes = torch.tensor(list(x.shape), dtype=torch.long)
+                    tensor_sizes = torch.tensor(
+                        list(x.shape), dtype=torch.long, device="cuda"
+                    )
                     dist.send(tensor_sizes, dst=self.current_stage_leaders[4])
 
                     # Send actual tensor
