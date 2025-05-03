@@ -1,5 +1,6 @@
 import os
 import datetime
+import torch
 import torch.distributed as dist
 import logging
 
@@ -10,7 +11,9 @@ logging.basicConfig(
 logger = logging.getLogger("fault_tolerant_resnet")
 
 
-def init_fault_tolerant_distributed(master_addr=None, master_port=None, backend="nccl"):
+def init_fault_tolerant_distributed(
+    master_addr=None, master_port=None, backend="nccl", timeout_minutes=5
+):
     """Initialize fault-tolerant distributed environment"""
     # Set environment variables for distributed training
     if master_addr:
@@ -23,15 +26,36 @@ def init_fault_tolerant_distributed(master_addr=None, master_port=None, backend=
     else:
         os.environ["MASTER_PORT"] = os.environ.get("MASTER_PORT", "29500")
 
-    # Initialize process group with timeout for fault detection
+    logger.info(
+        f"Attempting to initialize distributed with MASTER_ADDR: {os.environ['MASTER_ADDR']}, "
+        f"MASTER_PORT: {os.environ['MASTER_PORT']}, "
+        f"RANK: {os.environ.get('RANK', 'unknown')}, "
+        f"WORLD_SIZE: {os.environ.get('WORLD_SIZE', 'unknown')}"
+    )
+
+    # Choose backend based on available hardware
+    if backend == "nccl" and not torch.cuda.is_available():
+        logger.warning(
+            "NCCL backend requested but CUDA not available. Falling back to gloo backend."
+        )
+        backend = "gloo"
+
+    # Initialize process group with extended timeout for fault detection
     if not dist.is_initialized():
-        dist.init_process_group(
-            backend=backend,
-            timeout=datetime.timedelta(seconds=60),
-        )
-        logger.info(
-            f"Initialized distributed process group: rank {dist.get_rank()}/{dist.get_world_size()}"
-        )
+        try:
+            dist.init_process_group(
+                backend=backend,
+                timeout=datetime.timedelta(minutes=timeout_minutes),
+            )
+            logger.info(
+                f"Initialized distributed process group: rank {dist.get_rank()}/{dist.get_world_size()}"
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize distributed process group: {str(e)}")
+            logger.error(
+                "This could be due to firewall issues, incorrect network configuration, or unreachable nodes."
+            )
+            raise
 
 
 def get_fault_tolerant_stage_config(world_size):
