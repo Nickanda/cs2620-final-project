@@ -5,7 +5,10 @@
 set -e                                  # stop on the first error
 
 # ───────── rendez-vous TCP store (must be reachable by both ranks) ────
-export MASTER_ADDR=10.31.180.212
+export NCCL_SOCKET_IFNAME=eth0  # Or eth0 on Linux
+export GLOO_SOCKET_IFNAME=eth0  # Same as above
+export NCCL_IB_DISABLE=1
+export MASTER_ADDR=$(hostname)
 export MASTER_PORT=29503                # pick an unused port
 
 # ───────── common variables (identical for *all* ranks) ───────────────
