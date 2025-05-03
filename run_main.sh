@@ -3,18 +3,19 @@
 set -e
 
 # Explicitly disable IPv6 for NCCL
-export NCCL_SOCKET_IFNAME=em2  # Use Ethernet instead of InfiniBand
-export GLOO_SOCKET_IFNAME=em2
+export NCCL_SOCKET_IFNAME=ib0  # Use Ethernet instead of InfiniBand
+export GLOO_SOCKET_IFNAME=ib0
 export NCCL_IB_DISABLE=1
-export MASTER_ADDR=$(hostname -I | awk '{print $1}')  # Use first IP address
+export MASTER_ADDR=$(hostname -I | awk '{print $2}')  # Use first IP address
 export MASTER_PORT=29500
 export NCCL_SOCKET_FAMILY=AF_INET  # Force IPv4 only
 export NCCL_DEBUG=INFO
 
-# Increase timeout settings
-export NCCL_BLOCKING_WAIT=1
-export NCCL_ASYNC_ERROR_HANDLING=1
-export TORCH_DISTRIBUTED_DEBUG=DETAIL
+# Timeout and debug settings
+export TORCH_NCCL_BLOCKING_WAIT=1              # Updated from deprecated NCCL_BLOCKING_WAIT
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1       # Updated from deprecated NCCL_ASYNC_ERROR_HANDLING
+export NCCL_DEBUG=WARN                         # Reduce verbosity
+export TORCH_DISTRIBUTED_DEBUG=INFO            # Less detailed than DETAIL
 
 # Set world size
 export WORLD_SIZE=2
