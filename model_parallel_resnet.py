@@ -6,6 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 import logging
+import datetime
 
 # Import local modules
 from layers import Scale
@@ -228,7 +229,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
         logger.info(f"Rank {self.rank}: Started heartbeat monitoring thread")
 
     def _heartbeat_loop(self):
-        """Loop to send and monitor heartbeats"""
+        """Loop to send and monitor heartbeats with improved error handling"""
         error_count = 0
         max_errors = 10
 
@@ -236,21 +237,27 @@ class FaultTolerantModelParallelResNet(nn.Module):
             try:
                 # Send heartbeat
                 if dist.is_initialized():
-                    # Using a distributed tensor as heartbeat
+                    # Use a safer approach with timeouts for broadcast
                     if self.is_leader:
                         heartbeat = torch.tensor(
-                            [time.time(), self.rank],
-                            dtype=torch.float,
-                            device="cuda",  # Explicitly create on CUDA
+                            [time.time(), float(self.rank)],
+                            dtype=torch.float32,
+                            device="cuda" if torch.cuda.is_available() else "cpu",
                         )
-                        dist.broadcast(heartbeat, src=self.rank)
+                        # Use non-blocking communication with timeout
+                        work = dist.broadcast(heartbeat, src=self.rank, async_op=True)
+                        work.wait(timeout=datetime.timedelta(seconds=5))
 
-                    # Process leader failures and trigger failover if needed
+                    # Check other leaders' heartbeats
                     for stage_idx, stage in enumerate(self.stage_config):
+                        # Skip stages we're not involved with
+                        if stage_idx not in self.my_stages:
+                            continue
+
                         current_leader = self.current_stage_leaders[stage_idx]
 
-                        # Skip checking stages where we're not involved
-                        if stage_idx not in self.my_stages:
+                        # Skip checking our own heartbeat
+                        if current_leader == self.rank:
                             continue
 
                         # Check if we're a backup for this stage
@@ -269,13 +276,29 @@ class FaultTolerantModelParallelResNet(nn.Module):
                                     )
                                     self._handle_leader_failure(stage_idx)
 
-                # Record heartbeats from leaders
+                # Receive heartbeats from other leaders with timeout
                 for stage_idx, stage in enumerate(self.stage_config):
                     leader_rank = stage["leader"]["rank"]
                     if leader_rank != self.rank:  # Don't need to record own heartbeat
-                        heartbeat = torch.zeros(2, dtype=torch.float, device="cuda")
-                        dist.broadcast(heartbeat, src=leader_rank)
-                        self.last_heartbeats[leader_rank] = heartbeat[0].item()
+                        try:
+                            heartbeat = torch.zeros(
+                                2,
+                                dtype=torch.float32,
+                                device="cuda" if torch.cuda.is_available() else "cpu",
+                            )
+                            # Use non-blocking communication with timeout
+                            work = dist.broadcast(
+                                heartbeat, src=leader_rank, async_op=True
+                            )
+                            success = work.wait(timeout=datetime.timedelta(seconds=5))
+
+                            if success:
+                                self.last_heartbeats[leader_rank] = heartbeat[0].item()
+                        except Exception as e:
+                            logger.warning(
+                                f"Rank {self.rank}: Error receiving heartbeat from rank {leader_rank}: {str(e)}"
+                            )
+                            # Don't count this as a critical error
 
                 # Reset error count after successful execution
                 error_count = 0
