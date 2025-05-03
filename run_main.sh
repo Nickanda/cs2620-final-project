@@ -8,7 +8,7 @@ set -e                                  # stop on the first error
 export NCCL_SOCKET_IFNAME=ib0  # Or eth0 on Linux
 export GLOO_SOCKET_IFNAME=ib0  # Same as above
 export NCCL_IB_DISABLE=1
-export MASTER_ADDR=$(hostname -I | awk '{print $2}')
+export MASTER_ADDR=$(hostname -I | awk '{print $1}')
 export MASTER_PORT=12345                # pick an unused port
 # Add IPv6 disabling flag
 export NCCL_NET_GDR_LEVEL=0
