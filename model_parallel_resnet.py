@@ -298,9 +298,6 @@ class FaultTolerantModelParallelResNet(nn.Module):
 
     def _handle_leader_failure(self, stage_idx):
         """Handle a leader failure by promoting a backup"""
-        # Find the current leader
-        current_leader = self.current_stage_leaders[stage_idx]
-
         # Get the stage configuration
         stage_config = self.stage_config[stage_idx]
 
@@ -317,7 +314,6 @@ class FaultTolerantModelParallelResNet(nn.Module):
 
             if is_alive:
                 # Promote this backup to leader
-                old_leader = self.current_stage_leaders[stage_idx]
                 self.current_stage_leaders[stage_idx] = backup_rank
 
                 logger.info(
