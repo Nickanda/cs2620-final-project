@@ -65,7 +65,7 @@ if [ "$USE_MPS" == "1" ]; then
     python main.py \
       --mode train --rank 0 --world-size 2 \
       --master-addr "$MASTER_ADDR" --master-port "$MASTER_PORT" \
-      --batch-size 32 --epochs 25 &
+      --batch-size 32 --epochs 25 --simulate-failure &
 
   # Rank 1
   RANK=1 LOCAL_RANK=1 \
@@ -83,7 +83,7 @@ elif [ "$USE_CUDA" == "1" ]; then
     python main.py \
       --mode train --rank 0 --world-size 2 \
       --master-addr "$MASTER_ADDR" --master-port "$MASTER_PORT" \
-      --batch-size 32 --epochs 25 &
+      --batch-size 32 --epochs 25 --simulate-failure &
 
   # Rank 1 → GPU 1
   RANK=1 LOCAL_RANK=1 CUDA_VISIBLE_DEVICES=1 \
@@ -101,7 +101,7 @@ else
     python main.py \
       --mode train --rank 0 --world-size 2 \
       --master-addr "$MASTER_ADDR" --master-port "$MASTER_PORT" \
-      --batch-size 16 --epochs 25 &  # Smaller batch size for CPU
+      --batch-size 16 --epochs 25 --simulate-failure &  # Smaller batch size for CPU
 
   # Rank 1
   RANK=1 LOCAL_RANK=1 \
