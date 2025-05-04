@@ -241,63 +241,95 @@ class FaultTolerantModelParallelResNet(nn.Module):
         # Use CPU tensors for heartbeats to avoid MPS/CUDA issues
         device = "cpu"
 
+        # Keep track of the last time we saw a heartbeat from each rank
+        # Initialize with current time to avoid immediate failure detection
+        for i in range(self.world_size):
+            self.last_heartbeats[i] = time.time()
+
+        logger.info(f"Rank {self.rank}: Initialized heartbeat monitoring for {self.world_size} ranks")
+
         while True:
             try:
                 # Send heartbeat
                 if dist.is_initialized():
-                    # Use a safer approach with CPU tensors
-                    if self.is_leader:
-                        heartbeat = torch.tensor(
-                            [time.time(), float(self.rank)],
-                            dtype=torch.float32,
-                            device=device,
-                        )
-                        # Use non-blocking communication with explicit timeout
-                        try:
-                            work = dist.broadcast(heartbeat, src=self.rank, async_op=True)
-                            work.wait(timeout=datetime.timedelta(seconds=10))
-                        except Exception as e:
-                            pass
-                            # logger.warning(f"Rank {self.rank}: Heartbeat broadcast error (non-critical): {str(e)}")
-                            # Continue anyway - this is non-critical
+                    # All ranks send heartbeats to ensure we can detect when any rank fails
+                    # Not just leaders, as backups need to respond too
+                    heartbeat = torch.tensor(
+                        [time.time(), float(self.rank)],
+                        dtype=torch.float32,
+                        device=device,
+                    )
+                    
+                    # Use non-blocking communication with explicit timeout
+                    try:
+                        # Broadcast my heartbeat
+                        work = dist.broadcast(heartbeat, src=self.rank, async_op=True)
+                        work.wait(timeout=datetime.timedelta(seconds=10))
+                    except Exception as e:
+                        logger.warning(f"Rank {self.rank}: Heartbeat broadcast error (non-critical): {str(e)}")
+                        # Continue anyway - this is non-critical
 
-                    # Receive heartbeats from other leaders with timeout
-                    for stage_idx, stage in enumerate(self.stage_config):
-                        leader_rank = stage["leader"]["rank"]
-                        if leader_rank != self.rank:  # Don't need to record own heartbeat
+                    # Receive heartbeats from all other ranks, not just leaders
+                    for other_rank in range(self.world_size):
+                        if other_rank != self.rank:  # Don't need to record own heartbeat
                             try:
                                 heartbeat = torch.zeros(2, dtype=torch.float32, device=device)
                                 # Use non-blocking communication with timeout
-                                work = dist.broadcast(heartbeat, src=leader_rank, async_op=True)
-                                success = work.wait(timeout=datetime.timedelta(seconds=10))
+                                work = dist.broadcast(heartbeat, src=other_rank, async_op=True)
+                                
+                                # Lower timeout to faster detect failures
+                                success = work.wait(timeout=datetime.timedelta(seconds=5))
                                 
                                 if success:
-                                    self.last_heartbeats[leader_rank] = heartbeat[0].item()
+                                    self.last_heartbeats[other_rank] = time.time()  # Use current time instead of heartbeat time
+                                    logger.debug(f"Rank {self.rank}: Received heartbeat from rank {other_rank}")
                             except Exception as e:
+                                # Mark potential failure - increment missed heartbeat counter
                                 # Non-critical error
-                                logger.debug(f"Rank {self.rank}: Error receiving heartbeat from rank {leader_rank}: {str(e)}")
-                                # Continue anyway - missing heartbeats will be detected in leader failure handling
+                                logger.warning(f"Rank {self.rank}: Error receiving heartbeat from rank {other_rank}: {str(e)}")
+                                # Consider this a potential failure
+                                if other_rank in self.last_heartbeats:
+                                    # If this is a persistent missed heartbeat, we'll mark for potential takeover
+                                    # Move heartbeat timestamp further in the past to accelerate detection
+                                    if time.time() - self.last_heartbeats[other_rank] > 2 * self.heartbeat_interval:
+                                        self.last_heartbeats[other_rank] -= self.heartbeat_interval  # Age the heartbeat faster
 
-                    # Check other leaders' heartbeats
+                    # Check for failed ranks and initiate takeover if needed
+                    logger.debug(f"Rank {self.rank}: Checking heartbeats: {self.last_heartbeats}")
+                    
                     for stage_idx, stage in enumerate(self.stage_config):
-                        # Skip stages we're not involved with
+                        # Only worry about stages we're a backup for
                         if stage_idx not in self.my_stages:
                             continue
-
+                            
+                        # Get the current leader for this stage
                         current_leader = self.current_stage_leaders[stage_idx]
-
+                        
                         # Skip checking our own heartbeat
                         if current_leader == self.rank:
                             continue
-
+                        
                         # Check if we're a backup for this stage
-                        if not self.is_leader_for_stages[self.my_stages.index(stage_idx)]:
+                        am_backup = False
+                        for backup in stage["backups"]:
+                            if backup["rank"] == self.rank:
+                                am_backup = True
+                                break
+                        
+                        if am_backup:
                             # Check if leader for this stage is alive
                             if current_leader in self.last_heartbeats:
                                 last_beat_time = self.last_heartbeats[current_leader]
-                                if time.time() - last_beat_time > 5 * self.heartbeat_interval:
+                                time_since_last_beat = time.time() - last_beat_time
+                                
+                                # Log the time since last heartbeat for debugging
+                                logger.debug(f"Rank {self.rank}: Time since last heartbeat from rank {current_leader}: {time_since_last_beat:.2f}s")
+                                
+                                # If we haven't seen a heartbeat in a while, mark as failure
+                                if time_since_last_beat > 3 * self.heartbeat_interval:
                                     logger.warning(
-                                        f"Rank {self.rank}: Detected failure of leader (rank {current_leader}) for stage {stage_idx}!"
+                                        f"Rank {self.rank}: Detected failure of rank {current_leader} for stage {stage_idx}! "
+                                        f"Last heartbeat: {time_since_last_beat:.2f}s ago"
                                     )
                                     self._handle_leader_failure(stage_idx)
 
@@ -321,10 +353,13 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 time.sleep(self.heartbeat_interval)
 
     def _handle_leader_failure(self, stage_idx):
-        """Handle a leader failure by promoting a backup"""
+        """Handle a leader failure by promoting a backup and taking over all stages from failed rank"""
         # Get the stage configuration
         stage_config = self.stage_config[stage_idx]
-
+        failed_leader_rank = self.current_stage_leaders[stage_idx]
+        
+        logger.warning(f"Rank {self.rank}: Detected failure of leader (rank {failed_leader_rank}) for stage {stage_idx}!")
+        
         # Find the first backup - prioritize by order in the backup list
         for i, backup in enumerate(stage_config["backups"]):
             backup_rank = backup["rank"]
@@ -337,7 +372,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
             )
 
             if is_alive:
-                # Promote this backup to leader
+                # Promote this backup to leader for this stage
                 self.current_stage_leaders[stage_idx] = backup_rank
 
                 logger.info(
@@ -353,16 +388,28 @@ class FaultTolerantModelParallelResNet(nn.Module):
 
                     # Load checkpoint if available
                     self._load_stage_checkpoint(stage_idx)
+                    
+                    # Take over all stages that the failed rank was leading
+                    self._take_over_failed_rank_stages(failed_leader_rank)
+                    
+                    # Reset all activations to ensure clean gradient computation
+                    self._reset_activations()
 
-                    # Broadcast to other ranks that I'm now the leader
+                    # Broadcast to other ranks that I'm now the leader (skip this if all other ranks have failed)
                     if dist.is_initialized():
-                        status_update = torch.tensor(
-                            [stage_idx, backup_rank], dtype=torch.float, 
-                            device="cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-                        )
-                        for r in range(self.world_size):
-                            if r != self.rank:
-                                dist.send(status_update, dst=r)
+                        try:
+                            status_update = torch.tensor(
+                                [float(stage_idx), float(backup_rank)], dtype=torch.float32, 
+                                device="cpu"  # Always use CPU for communication
+                            )
+                            for r in range(self.world_size):
+                                if r != self.rank:
+                                    try:
+                                        dist.send(status_update, dst=r)
+                                    except Exception as e:
+                                        logger.warning(f"Rank {self.rank}: Failed to send status update to rank {r}: {str(e)}")
+                        except Exception as e:
+                            logger.warning(f"Rank {self.rank}: Error broadcasting leadership change: {str(e)}")
 
                     logger.info(f"Rank {self.rank}: Now leader for stage {stage_idx}")
 
@@ -370,11 +417,6 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 new_backups = [
                     b for b in stage_config["backups"] if b["rank"] != backup_rank
                 ]
-
-                # Add the failed leader to end of backups if we want to recover it later
-                # Note: We only do this if we know it will come back online
-                # failed_leader_device = stage_config['leader']['device']
-                # new_backups.append({'rank': old_leader, 'device': failed_leader_device})
 
                 # Update the stage configuration
                 self.stage_config[stage_idx] = {
@@ -385,6 +427,146 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 return
 
         logger.error(f"Rank {self.rank}: No available backup for stage {stage_idx}!")
+        
+    def _take_over_failed_rank_stages(self, failed_rank):
+        """Take over all stages that were led by a failed rank"""
+        logger.info(f"Rank {self.rank}: Taking over all stages led by failed rank {failed_rank}")
+        
+        # Track all newly acquired stages
+        newly_acquired_stages = []
+        
+        # Identify all stages where the failed rank was the leader
+        for stage_idx, stage in enumerate(self.stage_config):
+            # Skip if we've already handled this stage or if I'm already the leader
+            if self.current_stage_leaders[stage_idx] != failed_rank or self.current_stage_leaders[stage_idx] == self.rank:
+                continue
+                
+            # Check if I'm a backup for this stage
+            am_backup = False
+            for backup in stage["backups"]:
+                if backup["rank"] == self.rank:
+                    am_backup = True
+                    break
+                    
+            if am_backup:
+                # If I'm a backup, promote myself to leader for this stage
+                logger.info(f"Rank {self.rank}: Taking over leadership of stage {stage_idx} from failed rank {failed_rank}")
+                newly_acquired_stages.append(stage_idx)
+                
+                # Update leader status
+                self.current_stage_leaders[stage_idx] = self.rank
+                
+                # Update my status if stage in my_stages
+                if stage_idx in self.my_stages:
+                    idx = self.my_stages.index(stage_idx)
+                    self.is_leader_for_stages[idx] = True
+                    self.is_leader = True
+                else:
+                    # Add this stage to my responsibilities
+                    self.my_stages.append(stage_idx)
+                    self.is_leader_for_stages.append(True)
+                    
+                    # Determine device for this stage
+                    if torch.cuda.is_available():
+                        device = torch.device("cuda")
+                    elif torch.backends.mps.is_available():
+                        device = torch.device("mps")
+                    else:
+                        device = torch.device("cpu")
+                    
+                    self.stage_devices[stage_idx] = device
+                    
+                    # Initialize the stage-specific layers if not already initialized
+                    self._initialize_stage_layers(stage_idx)
+                
+                # Load checkpoint
+                self._load_stage_checkpoint(stage_idx)
+                
+                # Update stage configuration
+                new_backups = [b for b in stage["backups"] if b["rank"] != self.rank]
+                self.stage_config[stage_idx] = {
+                    "leader": {"rank": self.rank, "device": self.stage_devices[stage_idx]},
+                    "backups": new_backups,
+                }
+                
+        # Log updated responsibilities
+        logger.info(f"Rank {self.rank}: Now responsible for stages: {self.my_stages}")
+        logger.info(f"Rank {self.rank}: Leader for stages: {[stage for i, stage in enumerate(self.my_stages) if self.is_leader_for_stages[i]]}")
+        
+        # If we took over any stages, wait a moment to stabilize before continuing
+        if newly_acquired_stages:
+            time.sleep(1)
+            
+    def _reset_activations(self):
+        """Reset activations to ensure clean gradient computation after takeover"""
+        # This is critical to avoid the "modified by an inplace operation" error
+        # when a node takes over stages from a failed node
+        logger.info(f"Rank {self.rank}: Resetting activations to ensure clean gradient computation")
+        
+        # Reset any stored tensors
+        if hasattr(self, '_last_input'):
+            del self._last_input
+        
+        # Reset any intermediate activations that might be stored
+        # Force garbage collection to release any tensors
+        import gc
+        gc.collect()
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        # Clear any gradients
+        self.zero_grad()
+        
+    def zero_grad(self):
+        """Clear gradients of all parameters"""
+        for param in self.parameters():
+            if param.grad is not None:
+                param.grad.detach_()
+                param.grad.zero_()
+
+    def _initialize_stage_layers(self, stage_idx):
+        """Initialize the layers for a specific stage if they don't exist already"""
+        device = self.stage_devices[stage_idx]
+        
+        if stage_idx == 0 and not hasattr(self, 'conv1'):
+            self.conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False).to(device)
+            self.bn1 = nn.BatchNorm2d(64, eps=1.1e-5).to(device)
+            self.scale1 = Scale(64).to(device)
+            self.relu = nn.ReLU(inplace=True).to(device)
+            self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1).to(device)
+            
+        elif stage_idx == 1 and not hasattr(self, 'layer1'):
+            # We need to know how many layers to create - use default ResNet50 config
+            block = Bottleneck  # This should be defined elsewhere in your code
+            layers = [3, 4, 6, 3]  # Default ResNet50 configuration
+            self.layer1 = self._make_layer(block, 64, layers[0], stride=1, device=device)
+            
+        elif stage_idx == 2 and not hasattr(self, 'layer2'):
+            block = Bottleneck
+            layers = [3, 4, 6, 3]
+            # Need to set inplanes to the correct value
+            self.inplanes = 256  # After layer1 for ResNet50
+            self.layer2 = self._make_layer(block, 128, layers[1], stride=2, device=device)
+            
+        elif stage_idx == 3 and not hasattr(self, 'layer3'):
+            block = Bottleneck
+            layers = [3, 4, 6, 3]
+            # Need to set inplanes to the correct value
+            self.inplanes = 512  # After layer2 for ResNet50
+            self.layer3 = self._make_layer(block, 256, layers[2], stride=2, device=device)
+            
+        elif stage_idx == 4 and not hasattr(self, 'layer4'):
+            block = Bottleneck
+            layers = [3, 4, 6, 3]
+            # Need to set inplanes to the correct value
+            self.inplanes = 1024  # After layer3 for ResNet50
+            self.layer4 = self._make_layer(block, 512, layers[3], stride=2, device=device)
+            
+            # Final layers
+            self.avgpool = nn.AdaptiveAvgPool2d((1, 1)).to(device)
+            if self.include_top:
+                self.fc = nn.Linear(512 * block.expansion, 10).to(device)  # 10 classes for CIFAR-10
 
     def _save_stage_checkpoint(self, stage_idx):
         """Save checkpoint for a specific stage"""
@@ -476,6 +658,9 @@ class FaultTolerantModelParallelResNet(nn.Module):
         stage_outputs = {}
         original_batch_size = x.size(0)
         
+        # Track if we're in a recovery operation after takeover
+        in_recovery = hasattr(self, '_in_recovery') and self._in_recovery
+        
         # Make sure the input tensor tracks gradients
         if x.requires_grad == False:
             x.requires_grad = True
@@ -490,20 +675,26 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 if not x.requires_grad:
                     x.requires_grad = True
 
-                # Process initial layers
+                # Process initial layers - use non-inplace operations when in recovery
                 x = self.conv1(x)
                 x = self.bn1(x)
                 x = self.scale1(x)
-                x = self.relu(x)
+                
+                # Use clone to avoid inplace operation issues during takeover
+                if in_recovery:
+                    x = F.relu(x)
+                else:
+                    x = self.relu(x)
+                
                 x = self.maxpool(x)
 
                 # Store output for this stage
-                stage_outputs[0] = x.clone()
+                stage_outputs[0] = x.detach().clone() if in_recovery else x.clone()
 
                 # Send output to stage 1 leader if it's a different rank
                 if dist.is_initialized() and self.current_stage_leaders[1] != self.rank:
                     # Always use CPU for communication to avoid MPS issues
-                    x_cpu = x.cpu()
+                    x_cpu = x.detach().cpu()  # Detach to avoid gradient tracking issues during communication
                     
                     # Use simpler approach - first send a small tensor with metadata
                     # This helps establish a connection before sending the large tensor
@@ -522,10 +713,10 @@ class FaultTolerantModelParallelResNet(nn.Module):
                     except Exception as e:
                         logger.error(f"Rank {self.rank}: Error in stage 0 sending: {str(e)}")
                         # Return a proper dummy tensor for loss calculation
-                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(0, "cpu"))
+                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(0, "cpu"), requires_grad=True)
             except Exception as e:
                 logger.error(f"Rank {self.rank}: Error in stage 0 processing: {str(e)}")
-                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(0, "cpu"))
+                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(0, "cpu"), requires_grad=True)
                 
         # Stage 1: Layer 1
         if 1 in self.my_stages and self.current_stage_leaders[1] == self.rank:
@@ -552,21 +743,21 @@ class FaultTolerantModelParallelResNet(nn.Module):
                         x = x_cpu.to(self.stage_devices[1])
                         
                         # CRITICAL: Ensure gradients are tracked for backward pass
-                        x.requires_grad = True
+                        x = x.detach().requires_grad_(True)  # Create a fresh tensor with new version
                     except Exception as e:
                         logger.error(f"Rank {self.rank}: Error in stage 1 receiving: {str(e)}")
-                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(1, "cpu"))
+                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(1, "cpu"), requires_grad=True)
                 
-                # Process layer 1
+                # Process layer 1 - during recovery, we need to be careful with tensor versioning
                 x = self.layer1(x)
                 
-                # Store output for this stage
-                stage_outputs[1] = x.clone()
+                # Store output for this stage, detach if in recovery mode
+                stage_outputs[1] = x.detach().clone() if in_recovery else x.clone()
                 
                 # Send output to stage 2 leader
                 if dist.is_initialized() and self.current_stage_leaders[2] != self.rank:
                     # Use the same approach as for stage 0
-                    x_cpu = x.cpu()
+                    x_cpu = x.detach().cpu()  # Detach to avoid gradient tracking issues
                     
                     # Prepare metadata
                     metadata = torch.tensor([
@@ -586,7 +777,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
                         logger.error(f"Rank {self.rank}: Error in stage 1 sending: {str(e)}")
             except Exception as e:
                 logger.error(f"Rank {self.rank}: Error in stage 1 processing: {str(e)}")
-                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(1, "cpu"))
+                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(1, "cpu"), requires_grad=True)
                 
         # Stage 2: Layer 2
         if 2 in self.my_stages and self.current_stage_leaders[2] == self.rank:
@@ -612,22 +803,22 @@ class FaultTolerantModelParallelResNet(nn.Module):
                         # Move to the appropriate device
                         x = x_cpu.to(self.stage_devices[2])
                         
-                        # CRITICAL: Ensure gradients are tracked for backward pass
-                        x.requires_grad = True
+                        # CRITICAL: Create a fresh tensor with gradient tracking
+                        x = x.detach().requires_grad_(True)
                     except Exception as e:
                         logger.error(f"Rank {self.rank}: Error in stage 2 receiving: {str(e)}")
-                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(2, "cpu"))
+                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(2, "cpu"), requires_grad=True)
                 
                 # Process layer 2
                 x = self.layer2(x)
                 
-                # Store output for this stage
-                stage_outputs[2] = x.clone()
+                # Store output for this stage, detach if in recovery mode
+                stage_outputs[2] = x.detach().clone() if in_recovery else x.clone()
                 
                 # Send output to stage 3 leader
                 if dist.is_initialized() and self.current_stage_leaders[3] != self.rank:
                     # Use the same approach as before
-                    x_cpu = x.cpu()
+                    x_cpu = x.detach().cpu()  # Detach to avoid gradient tracking issues
                     
                     # Prepare metadata
                     metadata = torch.tensor([
@@ -647,7 +838,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
                         logger.error(f"Rank {self.rank}: Error in stage 2 sending: {str(e)}")
             except Exception as e:
                 logger.error(f"Rank {self.rank}: Error in stage 2 processing: {str(e)}")
-                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(2, "cpu"))
+                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(2, "cpu"), requires_grad=True)
         
         # Stage 3: Layer 3
         if 3 in self.my_stages and self.current_stage_leaders[3] == self.rank:
@@ -673,22 +864,22 @@ class FaultTolerantModelParallelResNet(nn.Module):
                         # Move to the appropriate device
                         x = x_cpu.to(self.stage_devices[3])
                         
-                        # CRITICAL: Ensure gradients are tracked for backward pass
-                        x.requires_grad = True
+                        # CRITICAL: Create a fresh tensor with gradient tracking
+                        x = x.detach().requires_grad_(True)
                     except Exception as e:
                         logger.error(f"Rank {self.rank}: Error in stage 3 receiving: {str(e)}")
-                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(3, "cpu"))
+                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(3, "cpu"), requires_grad=True)
                 
                 # Process layer 3
                 x = self.layer3(x)
                 
                 # Store output for this stage
-                stage_outputs[3] = x.clone()
+                stage_outputs[3] = x.detach().clone() if in_recovery else x.clone()
                 
                 # Send output to stage 4 leader
                 if dist.is_initialized() and self.current_stage_leaders[4] != self.rank:
                     # Use the same approach as before
-                    x_cpu = x.cpu()
+                    x_cpu = x.detach().cpu()  # Detach to avoid gradient tracking issues
                     
                     # Prepare metadata
                     metadata = torch.tensor([
@@ -708,7 +899,7 @@ class FaultTolerantModelParallelResNet(nn.Module):
                         logger.error(f"Rank {self.rank}: Error in stage 3 sending: {str(e)}")
             except Exception as e:
                 logger.error(f"Rank {self.rank}: Error in stage 3 processing: {str(e)}")
-                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(3, "cpu"))
+                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(3, "cpu"), requires_grad=True)
         
         # Stage 4: Layer 4 + final layers
         if 4 in self.my_stages and self.current_stage_leaders[4] == self.rank:
@@ -734,16 +925,17 @@ class FaultTolerantModelParallelResNet(nn.Module):
                         # Move to the appropriate device
                         x = x_cpu.to(self.stage_devices[4])
                         
-                        # CRITICAL: Ensure gradients are tracked for backward pass
-                        x.requires_grad = True
+                        # CRITICAL: Create a fresh tensor with gradient tracking
+                        x = x.detach().requires_grad_(True)
                     except Exception as e:
                         logger.error(f"Rank {self.rank}: Error in stage 4 receiving: {str(e)}")
-                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(4, "cpu"))
+                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(4, "cpu"), requires_grad=True)
                 
-                # Process layer 4
+                # Process layer 4 - be careful with inplace operations
                 x = self.layer4(x)
                 
                 # Process final layers - classification
+                # Use functional calls instead of inplace methods when in recovery to avoid version issues
                 x = self.avgpool(x)
                 x = torch.flatten(x, 1)
                 
@@ -751,13 +943,18 @@ class FaultTolerantModelParallelResNet(nn.Module):
                     x = self.fc(x)
                 
                 # Store output for this stage
-                stage_outputs[4] = x.clone()
+                stage_outputs[4] = x.detach().clone() if in_recovery else x.clone()
+                
+                # Clear recovery mode flag after successful forward pass
+                if in_recovery:
+                    self._in_recovery = False
+                    logger.info(f"Rank {self.rank}: Recovery complete, resuming normal processing")
                 
                 # Final stage - return the output
                 return x
             except Exception as e:
                 logger.error(f"Rank {self.rank}: Error in stage 4 processing: {str(e)}")
-                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(4, "cpu"))
+                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(4, "cpu"), requires_grad=True)
         
         # If this rank is not responsible for the final output, return a dummy tensor
         # Make sure the dummy tensor has requires_grad=True to avoid backward errors
