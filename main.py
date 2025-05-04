@@ -10,6 +10,10 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from tqdm import tqdm
+import ssl
+
+# Disable SSL certificate verification for dataset downloads (macOS workaround)
+ssl._create_default_https_context = ssl._create_unverified_context
 
 # Import local modules
 from fault_tolerant_distributed import (
@@ -191,17 +195,46 @@ if __name__ == "__main__":
                     # Forward pass
                     data, target = data.to(device), target.to(device)
                     output = model(data)
+                    
+                    # Ensure output and target have compatible shapes for cross entropy loss
+                    # The issue happens when a node that's not responsible for the final layer
+                    # returns a dummy tensor, but still tries to calculate a loss
+                    if output.dim() != 2 or output.size(1) != 10:
+                        logger.warning(f"Rank {args.rank}: Output has incorrect shape {output.shape}, expected [batch_size, 10]")
+                        # This node is likely not responsible for final output
+                        # Skip the backward pass
+                        continue
+                    
+                    if target.dim() != 1:
+                        logger.warning(f"Rank {args.rank}: Target has incorrect shape {target.shape}, expected 1D tensor")
+                        # Try to fix target shape if possible
+                        if target.dim() > 1:
+                            target = target.reshape(-1)
+                        else:
+                            # Skip if can't reshape properly
+                            continue
+                            
+                    # Make sure batch sizes match
+                    if output.size(0) != target.size(0):
+                        logger.warning(f"Rank {args.rank}: Batch size mismatch: output {output.size(0)}, target {target.size(0)}")
+                        # Skip this batch
+                        continue
 
                     # Backward pass and optimize
-                    loss = criterion(output, target)
-                    loss.backward()
-                    optimizer.step()
+                    try:
+                        loss = criterion(output, target)
+                        loss.backward()
+                        optimizer.step()
 
-                    # Update statistics
-                    train_loss += loss.item()
-                    _, predicted = output.max(1)
-                    total += target.size(0)
-                    correct += predicted.eq(target).sum().item()
+                        # Update statistics
+                        train_loss += loss.item()
+                        _, predicted = output.max(1)
+                        total += target.size(0)
+                        correct += predicted.eq(target).sum().item()
+                    except Exception as e:
+                        logger.error(f"Rank {args.rank}: Error in backward pass: {str(e)}")
+                        # Continue with next batch
+                        continue
 
                     # Save checkpoints periodically
                     if batch_idx % 100 == 0:

@@ -12,7 +12,7 @@ logger = logging.getLogger("fault_tolerant_resnet")
 
 
 def init_fault_tolerant_distributed(
-    master_addr=None, master_port=None, backend="nccl", timeout_minutes=1
+    master_addr=None, master_port=None, backend=None, timeout_minutes=10
 ):
     """Initialize fault-tolerant distributed environment"""
     # Set environment variables for distributed training
@@ -33,12 +33,22 @@ def init_fault_tolerant_distributed(
         f"WORLD_SIZE: {os.environ.get('WORLD_SIZE', 'unknown')}"
     )
 
-    # Choose backend based on available hardware
-    if backend == "nccl" and not torch.cuda.is_available():
-        logger.warning(
-            "NCCL backend requested but CUDA not available. Falling back to gloo backend."
-        )
-        backend = "gloo"
+    # Remove interface specification that may be causing issues
+    # if "GLOO_SOCKET_IFNAME" in os.environ:
+    #     del os.environ["GLOO_SOCKET_IFNAME"]
+    
+    # # Set Gloo buffer allocation timeout to a higher value
+    # if "GLOO_DEVICE_TRANSPORT" not in os.environ:
+    #     os.environ["GLOO_DEVICE_TRANSPORT"] = "tcp"
+
+    # Choose appropriate backend based on available hardware
+    if backend is None:
+        if torch.cuda.is_available():
+            backend = "nccl"  # Use NCCL for NVIDIA GPUs
+        else:
+            backend = "gloo"  # Use Gloo for CPU and MPS (Apple Silicon)
+    
+    logger.info(f"Using '{backend}' backend for distributed training")
 
     # Initialize process group with extended timeout for fault detection
     if not dist.is_initialized():
@@ -76,31 +86,49 @@ def get_fault_tolerant_stage_config(world_size):
 
     # For a minimal setup, we need at least 2 machines
     if world_size < 2:
+        # Default device based on available hardware
+        if torch.cuda.is_available():
+            default_device = "cuda:0"
+        elif torch.backends.mps.is_available():
+            default_device = "mps"
+        else:
+            default_device = "cpu"
+            
         return [
-            {"leader": {"rank": 0, "device": "cuda:0"}, "backups": []},
-            {"leader": {"rank": 0, "device": "cuda:0"}, "backups": []},
-            {"leader": {"rank": 0, "device": "cuda:0"}, "backups": []},
-            {"leader": {"rank": 0, "device": "cuda:0"}, "backups": []},
-            {"leader": {"rank": 0, "device": "cuda:0"}, "backups": []},
+            {"leader": {"rank": 0, "device": default_device}, "backups": []},
+            {"leader": {"rank": 0, "device": default_device}, "backups": []},
+            {"leader": {"rank": 0, "device": default_device}, "backups": []},
+            {"leader": {"rank": 0, "device": default_device}, "backups": []},
+            {"leader": {"rank": 0, "device": default_device}, "backups": []},
         ]
 
-    # Default GPU device to use per machine (can be customized)
-    default_device = "cuda:0"
+    # Default device to use per machine - prioritize MPS on Apple Silicon
+    if torch.cuda.is_available():
+        default_device = "cuda:0"
+    elif torch.backends.mps.is_available():
+        default_device = "mps"
+    else:
+        default_device = "cpu"
 
-    # Distribute the stages with redundancy
+    # Set up the new configuration where rank 0 handles stages 0, 1, 2 and rank 1 handles stages 3, 4
     config = []
 
     # For each stage (5 total: initial + layer1-4)
     for stage_idx in range(5):
-        leader_rank = stage_idx % world_size
+        # Assign leader ranks: 0 for first three stages, 1 for next two
+        if stage_idx < 3:
+            leader_rank = 0
+        else:
+            leader_rank = 1
 
         # Create backups - use all machines except the leader
         backups = []
         backup_count = min(2, world_size - 1)  # Use at most 2 backups
 
-        # Select next machines in order as backups
-        for i in range(backup_count):
-            backup_rank = (leader_rank + i + 1) % world_size
+        # Select machines as backups, skipping the leader
+        backup_candidates = [rank for rank in range(world_size) if rank != leader_rank]
+        for i in range(min(backup_count, len(backup_candidates))):
+            backup_rank = backup_candidates[i]
             backups.append({"rank": backup_rank, "device": default_device})
 
         # Add stage configuration

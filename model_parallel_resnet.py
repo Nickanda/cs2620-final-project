@@ -66,9 +66,14 @@ class FaultTolerantModelParallelResNet(nn.Module):
 
         # If no stage config provided, create a basic one with current device
         if self.stage_config is None:
-            current_device = torch.device(
-                "cuda" if torch.cuda.is_available() else "cpu"
-            )
+            # Check for MPS (Metal Performance Shaders) on Apple Silicon first
+            if torch.backends.mps.is_available():
+                current_device = torch.device("mps")
+            elif torch.cuda.is_available():
+                current_device = torch.device("cuda")
+            else:
+                current_device = torch.device("cpu")
+                
             # Create default config with single machine for all stages
             self.stage_config = [
                 {"leader": {"rank": 0, "device": current_device}, "backups": []}
@@ -229,24 +234,49 @@ class FaultTolerantModelParallelResNet(nn.Module):
         logger.info(f"Rank {self.rank}: Started heartbeat monitoring thread")
 
     def _heartbeat_loop(self):
-        """Loop to send and monitor heartbeats with improved error handling"""
+        """Loop to send and monitor heartbeats with improved error handling for Apple Silicon"""
         error_count = 0
         max_errors = 10
+        
+        # Use CPU tensors for heartbeats to avoid MPS/CUDA issues
+        device = "cpu"
 
         while True:
             try:
                 # Send heartbeat
                 if dist.is_initialized():
-                    # Use a safer approach with timeouts for broadcast
+                    # Use a safer approach with CPU tensors
                     if self.is_leader:
                         heartbeat = torch.tensor(
                             [time.time(), float(self.rank)],
                             dtype=torch.float32,
-                            device="cuda" if torch.cuda.is_available() else "cpu",
+                            device=device,
                         )
-                        # Use non-blocking communication with timeout
-                        work = dist.broadcast(heartbeat, src=self.rank, async_op=True)
-                        work.wait(timeout=datetime.timedelta(seconds=5))
+                        # Use non-blocking communication with explicit timeout
+                        try:
+                            work = dist.broadcast(heartbeat, src=self.rank, async_op=True)
+                            work.wait(timeout=datetime.timedelta(seconds=10))
+                        except Exception as e:
+                            pass
+                            # logger.warning(f"Rank {self.rank}: Heartbeat broadcast error (non-critical): {str(e)}")
+                            # Continue anyway - this is non-critical
+
+                    # Receive heartbeats from other leaders with timeout
+                    for stage_idx, stage in enumerate(self.stage_config):
+                        leader_rank = stage["leader"]["rank"]
+                        if leader_rank != self.rank:  # Don't need to record own heartbeat
+                            try:
+                                heartbeat = torch.zeros(2, dtype=torch.float32, device=device)
+                                # Use non-blocking communication with timeout
+                                work = dist.broadcast(heartbeat, src=leader_rank, async_op=True)
+                                success = work.wait(timeout=datetime.timedelta(seconds=10))
+                                
+                                if success:
+                                    self.last_heartbeats[leader_rank] = heartbeat[0].item()
+                            except Exception as e:
+                                # Non-critical error
+                                logger.debug(f"Rank {self.rank}: Error receiving heartbeat from rank {leader_rank}: {str(e)}")
+                                # Continue anyway - missing heartbeats will be detected in leader failure handling
 
                     # Check other leaders' heartbeats
                     for stage_idx, stage in enumerate(self.stage_config):
@@ -261,44 +291,15 @@ class FaultTolerantModelParallelResNet(nn.Module):
                             continue
 
                         # Check if we're a backup for this stage
-                        if not self.is_leader_for_stages[
-                            self.my_stages.index(stage_idx)
-                        ]:
+                        if not self.is_leader_for_stages[self.my_stages.index(stage_idx)]:
                             # Check if leader for this stage is alive
                             if current_leader in self.last_heartbeats:
                                 last_beat_time = self.last_heartbeats[current_leader]
-                                if (
-                                    time.time() - last_beat_time
-                                    > 3 * self.heartbeat_interval
-                                ):
+                                if time.time() - last_beat_time > 5 * self.heartbeat_interval:
                                     logger.warning(
                                         f"Rank {self.rank}: Detected failure of leader (rank {current_leader}) for stage {stage_idx}!"
                                     )
                                     self._handle_leader_failure(stage_idx)
-
-                # Receive heartbeats from other leaders with timeout
-                for stage_idx, stage in enumerate(self.stage_config):
-                    leader_rank = stage["leader"]["rank"]
-                    if leader_rank != self.rank:  # Don't need to record own heartbeat
-                        try:
-                            heartbeat = torch.zeros(
-                                2,
-                                dtype=torch.float32,
-                                device="cuda" if torch.cuda.is_available() else "cpu",
-                            )
-                            # Use non-blocking communication with timeout
-                            work = dist.broadcast(
-                                heartbeat, src=leader_rank, async_op=True
-                            )
-                            success = work.wait(timeout=datetime.timedelta(seconds=5))
-
-                            if success:
-                                self.last_heartbeats[leader_rank] = heartbeat[0].item()
-                        except Exception as e:
-                            logger.warning(
-                                f"Rank {self.rank}: Error receiving heartbeat from rank {leader_rank}: {str(e)}"
-                            )
-                            # Don't count this as a critical error
 
                 # Reset error count after successful execution
                 error_count = 0
@@ -356,7 +357,8 @@ class FaultTolerantModelParallelResNet(nn.Module):
                     # Broadcast to other ranks that I'm now the leader
                     if dist.is_initialized():
                         status_update = torch.tensor(
-                            [stage_idx, backup_rank], dtype=torch.float, device="cuda"
+                            [stage_idx, backup_rank], dtype=torch.float, 
+                            device="cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
                         )
                         for r in range(self.world_size):
                             if r != self.rank:
@@ -472,193 +474,292 @@ class FaultTolerantModelParallelResNet(nn.Module):
         """Forward pass including stage distribution and fault tolerance"""
         # Track tensors at each stage (for failure recovery)
         stage_outputs = {}
+        original_batch_size = x.size(0)
+        
+        # Make sure the input tensor tracks gradients
+        if x.requires_grad == False:
+            x.requires_grad = True
 
         # Stage 0: Initial convolution layer
         if 0 in self.my_stages and self.current_stage_leaders[0] == self.rank:
-            # Move input to appropriate device
-            x = x.to(self.stage_devices[0])
+            try:
+                # Move input to appropriate device
+                x = x.to(self.stage_devices[0])
+                
+                # Ensure gradients are tracked after device transfer
+                if not x.requires_grad:
+                    x.requires_grad = True
 
-            # Process initial layers
-            x = self.conv1(x)
-            x = self.bn1(x)
-            x = self.scale1(x)
-            x = self.relu(x)
-            x = self.maxpool(x)
-
-            # Store output for this stage
-            stage_outputs[0] = x
-
-            # Send output to stage 1 leader
-            if dist.is_initialized() and self.current_stage_leaders[1] != self.rank:
-                # Send tensor to next stage's leader
-                # dist.send(x, dst=self.current_stage_leaders[1])
-                # first send its shape, then the data
-                tensor_sizes = torch.tensor(
-                    list(x.shape), dtype=torch.long, device="cuda"
-                )
-                dist.send(tensor_sizes, dst=self.current_stage_leaders[1])
-                dist.send(x, dst=self.current_stage_leaders[1])
-
-        # Stage 1: Layer 1
-        if 1 in self.my_stages:
-            if self.current_stage_leaders[1] == self.rank:
-                # If we're not the leader of the previous stage, receive input
-                if (
-                    0 not in self.my_stages
-                    or self.current_stage_leaders[0] != self.rank
-                ):
-                    # x = torch.zeros_like(stage_outputs.get(0, x))
-                    # dist.recv(x, src=self.current_stage_leaders[0])
-                    # receive shape
-                    tensor_sizes = torch.zeros(4, dtype=torch.long, device="cuda")
-                    dist.recv(tensor_sizes, src=self.current_stage_leaders[0])
-                    x = torch.zeros(
-                        tuple(tensor_sizes.tolist()),
-                        dtype=torch.float,
-                    ).to(self.stage_devices[1])
-                    dist.recv(x, src=self.current_stage_leaders[0])
-
-                # Process layer 1
-                x = x.to(self.stage_devices[1])
-                x = self.layer1(x)
+                # Process initial layers
+                x = self.conv1(x)
+                x = self.bn1(x)
+                x = self.scale1(x)
+                x = self.relu(x)
+                x = self.maxpool(x)
 
                 # Store output for this stage
-                stage_outputs[1] = x
+                stage_outputs[0] = x.clone()
 
+                # Send output to stage 1 leader if it's a different rank
+                if dist.is_initialized() and self.current_stage_leaders[1] != self.rank:
+                    # Always use CPU for communication to avoid MPS issues
+                    x_cpu = x.cpu()
+                    
+                    # Use simpler approach - first send a small tensor with metadata
+                    # This helps establish a connection before sending the large tensor
+                    metadata = torch.tensor([
+                        original_batch_size,  # Item 0: Batch size
+                        x_cpu.size(1),        # Item 1: Channels
+                        x_cpu.size(2),        # Item 2: Height
+                        x_cpu.size(3),        # Item 3: Width
+                    ], dtype=torch.long, device="cpu")
+                                        
+                    try:
+                        dist.send(metadata, dst=self.current_stage_leaders[1])
+                        
+                        # Now send the actual tensor with blocking call (simpler and more reliable)
+                        dist.send(x_cpu, dst=self.current_stage_leaders[1])
+                    except Exception as e:
+                        logger.error(f"Rank {self.rank}: Error in stage 0 sending: {str(e)}")
+                        # Return a proper dummy tensor for loss calculation
+                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(0, "cpu"))
+            except Exception as e:
+                logger.error(f"Rank {self.rank}: Error in stage 0 processing: {str(e)}")
+                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(0, "cpu"))
+                
+        # Stage 1: Layer 1
+        if 1 in self.my_stages and self.current_stage_leaders[1] == self.rank:
+            try:
+                # If we're not the leader of the previous stage, receive input
+                if 0 not in self.my_stages or self.current_stage_leaders[0] != self.rank:
+                    # Receive metadata first
+                    metadata = torch.zeros(4, dtype=torch.long, device="cpu")
+                    
+                    try:
+                        dist.recv(metadata, src=self.current_stage_leaders[0])
+                        
+                        # Create tensor with the right size
+                        tensor_shape = (metadata[0].item(), metadata[1].item(), 
+                                        metadata[2].item(), metadata[3].item())
+                        
+                        # Create a tensor on CPU first
+                        x_cpu = torch.zeros(tensor_shape, dtype=torch.float32, device="cpu")
+                        
+                        # Receive the actual tensor data
+                        dist.recv(x_cpu, src=self.current_stage_leaders[0])
+                        
+                        # Move to the appropriate device
+                        x = x_cpu.to(self.stage_devices[1])
+                        
+                        # CRITICAL: Ensure gradients are tracked for backward pass
+                        x.requires_grad = True
+                    except Exception as e:
+                        logger.error(f"Rank {self.rank}: Error in stage 1 receiving: {str(e)}")
+                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(1, "cpu"))
+                
+                # Process layer 1
+                x = self.layer1(x)
+                
+                # Store output for this stage
+                stage_outputs[1] = x.clone()
+                
                 # Send output to stage 2 leader
                 if dist.is_initialized() and self.current_stage_leaders[2] != self.rank:
-                    dist.send(x, dst=self.current_stage_leaders[2])
-
+                    # Use the same approach as for stage 0
+                    x_cpu = x.cpu()
+                    
+                    # Prepare metadata
+                    metadata = torch.tensor([
+                        x_cpu.size(0),
+                        x_cpu.size(1),
+                        x_cpu.size(2),
+                        x_cpu.size(3),
+                    ], dtype=torch.long, device="cpu")
+                    
+                    try:
+                        # Send metadata
+                        dist.send(metadata, dst=self.current_stage_leaders[2])
+                        
+                        # Send tensor data
+                        dist.send(x_cpu, dst=self.current_stage_leaders[2])
+                    except Exception as e:
+                        logger.error(f"Rank {self.rank}: Error in stage 1 sending: {str(e)}")
+            except Exception as e:
+                logger.error(f"Rank {self.rank}: Error in stage 1 processing: {str(e)}")
+                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(1, "cpu"))
+                
         # Stage 2: Layer 2
-        if 2 in self.my_stages:
-            if self.current_stage_leaders[2] == self.rank:
+        if 2 in self.my_stages and self.current_stage_leaders[2] == self.rank:
+            try:
                 # If we're not the leader of the previous stage, receive input
-                if (
-                    1 not in self.my_stages
-                    or self.current_stage_leaders[1] != self.rank
-                ):
-                    # We don't know the exact shape, so we'll have to use Tensor.new_zeros
-                    # with proper shape after receiving from previous stage
-                    if dist.is_initialized():
-                        # Receive tensor size first
-                        tensor_sizes = torch.zeros(4, dtype=torch.long, device="cuda")
-                        dist.recv(tensor_sizes, src=self.current_stage_leaders[1])
-
-                        # Create empty tensor with right size
-                        x = torch.zeros(tensor_sizes.tolist(), dtype=torch.float).to(
-                            self.stage_devices[2]
-                        )
-
-                        # Receive actual tensor
-                        dist.recv(x, src=self.current_stage_leaders[1])
-
+                if 1 not in self.my_stages or self.current_stage_leaders[1] != self.rank:
+                    # Receive metadata first
+                    metadata = torch.zeros(4, dtype=torch.long, device="cpu")
+                    
+                    try:
+                        dist.recv(metadata, src=self.current_stage_leaders[1])
+                        
+                        # Create tensor with the right size
+                        tensor_shape = (metadata[0].item(), metadata[1].item(), 
+                                        metadata[2].item(), metadata[3].item())
+                        
+                        # Create a tensor on CPU first
+                        x_cpu = torch.zeros(tensor_shape, dtype=torch.float32, device="cpu")
+                        
+                        # Receive the actual tensor data
+                        dist.recv(x_cpu, src=self.current_stage_leaders[1])
+                        
+                        # Move to the appropriate device
+                        x = x_cpu.to(self.stage_devices[2])
+                        
+                        # CRITICAL: Ensure gradients are tracked for backward pass
+                        x.requires_grad = True
+                    except Exception as e:
+                        logger.error(f"Rank {self.rank}: Error in stage 2 receiving: {str(e)}")
+                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(2, "cpu"))
+                
                 # Process layer 2
-                x = x.to(self.stage_devices[2])
                 x = self.layer2(x)
-
+                
                 # Store output for this stage
-                stage_outputs[2] = x
-
+                stage_outputs[2] = x.clone()
+                
                 # Send output to stage 3 leader
                 if dist.is_initialized() and self.current_stage_leaders[3] != self.rank:
-                    # Send tensor size first
-                    tensor_sizes = torch.tensor(
-                        list(x.shape), dtype=torch.long, device="cuda"
-                    )
-                    dist.send(tensor_sizes, dst=self.current_stage_leaders[3])
-
-                    # Send actual tensor
-                    dist.send(x, dst=self.current_stage_leaders[3])
-
+                    # Use the same approach as before
+                    x_cpu = x.cpu()
+                    
+                    # Prepare metadata
+                    metadata = torch.tensor([
+                        x_cpu.size(0),
+                        x_cpu.size(1),
+                        x_cpu.size(2),
+                        x_cpu.size(3),
+                    ], dtype=torch.long, device="cpu")
+                    
+                    try:
+                        # Send metadata
+                        dist.send(metadata, dst=self.current_stage_leaders[3])
+                        
+                        # Send tensor data
+                        dist.send(x_cpu, dst=self.current_stage_leaders[3])
+                    except Exception as e:
+                        logger.error(f"Rank {self.rank}: Error in stage 2 sending: {str(e)}")
+            except Exception as e:
+                logger.error(f"Rank {self.rank}: Error in stage 2 processing: {str(e)}")
+                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(2, "cpu"))
+        
         # Stage 3: Layer 3
-        if 3 in self.my_stages:
-            if self.current_stage_leaders[3] == self.rank:
+        if 3 in self.my_stages and self.current_stage_leaders[3] == self.rank:
+            try:
                 # If we're not the leader of the previous stage, receive input
-                if (
-                    2 not in self.my_stages
-                    or self.current_stage_leaders[2] != self.rank
-                ):
-                    if dist.is_initialized():
-                        # Receive tensor size first
-                        tensor_sizes = torch.zeros(4, dtype=torch.long, device="cuda")
-                        dist.recv(tensor_sizes, src=self.current_stage_leaders[2])
-
-                        # Create empty tensor with right size
-                        x = torch.zeros(tensor_sizes.tolist(), dtype=torch.float).to(
-                            self.stage_devices[3]
-                        )
-
-                        # Receive actual tensor
-                        dist.recv(x, src=self.current_stage_leaders[2])
-
+                if 2 not in self.my_stages or self.current_stage_leaders[2] != self.rank:
+                    # Receive metadata first
+                    metadata = torch.zeros(4, dtype=torch.long, device="cpu")
+                    
+                    try:
+                        dist.recv(metadata, src=self.current_stage_leaders[2])
+                        
+                        # Create tensor with the right size
+                        tensor_shape = (metadata[0].item(), metadata[1].item(), 
+                                        metadata[2].item(), metadata[3].item())
+                        
+                        # Create a tensor on CPU first
+                        x_cpu = torch.zeros(tensor_shape, dtype=torch.float32, device="cpu")
+                        
+                        # Receive the actual tensor data
+                        dist.recv(x_cpu, src=self.current_stage_leaders[2])
+                        
+                        # Move to the appropriate device
+                        x = x_cpu.to(self.stage_devices[3])
+                        
+                        # CRITICAL: Ensure gradients are tracked for backward pass
+                        x.requires_grad = True
+                    except Exception as e:
+                        logger.error(f"Rank {self.rank}: Error in stage 3 receiving: {str(e)}")
+                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(3, "cpu"))
+                
                 # Process layer 3
-                x = x.to(self.stage_devices[3])
                 x = self.layer3(x)
-
+                
                 # Store output for this stage
-                stage_outputs[3] = x
-
+                stage_outputs[3] = x.clone()
+                
                 # Send output to stage 4 leader
                 if dist.is_initialized() and self.current_stage_leaders[4] != self.rank:
-                    # Send tensor size first
-                    tensor_sizes = torch.tensor(
-                        list(x.shape), dtype=torch.long, device="cuda"
-                    )
-                    dist.send(tensor_sizes, dst=self.current_stage_leaders[4])
-
-                    # Send actual tensor
-                    dist.send(x, dst=self.current_stage_leaders[4])
-
+                    # Use the same approach as before
+                    x_cpu = x.cpu()
+                    
+                    # Prepare metadata
+                    metadata = torch.tensor([
+                        x_cpu.size(0),
+                        x_cpu.size(1),
+                        x_cpu.size(2),
+                        x_cpu.size(3),
+                    ], dtype=torch.long, device="cpu")
+                    
+                    try:
+                        # Send metadata
+                        dist.send(metadata, dst=self.current_stage_leaders[4])
+                        
+                        # Send tensor data
+                        dist.send(x_cpu, dst=self.current_stage_leaders[4])
+                    except Exception as e:
+                        logger.error(f"Rank {self.rank}: Error in stage 3 sending: {str(e)}")
+            except Exception as e:
+                logger.error(f"Rank {self.rank}: Error in stage 3 processing: {str(e)}")
+                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(3, "cpu"))
+        
         # Stage 4: Layer 4 + final layers
-        if 4 in self.my_stages:
-            if self.current_stage_leaders[4] == self.rank:
-                # If we're not the leader of the previous stage, receive input
-                if (
-                    3 not in self.my_stages
-                    or self.current_stage_leaders[3] != self.rank
-                ):
-                    if dist.is_initialized():
-                        # Receive tensor size first
-                        tensor_sizes = torch.zeros(4, dtype=torch.long, device="cuda")
-                        dist.recv(tensor_sizes, src=self.current_stage_leaders[3])
-
-                        # Create empty tensor with right size
-                        x = torch.zeros(tensor_sizes.tolist(), dtype=torch.float).to(
-                            self.stage_devices[4]
-                        )
-
-                        # Receive actual tensor
-                        dist.recv(x, src=self.current_stage_leaders[3])
-
-                # Process layer 4
-                x = x.to(self.stage_devices[4])
-                x = self.layer4(x)
-
-                # Process final layers
-                if self.include_top:
-                    x = self.avgpool(x)
-                    x = torch.flatten(x, 1)
-                    x = self.fc(x)
-                else:
-                    # If not including the top FC layer, you can optionally apply
-                    # global pooling.
-                    if self.pooling == "avg":
-                        x = F.adaptive_avg_pool2d(x, (1, 1))
-                        x = torch.flatten(x, 1)
-                    elif self.pooling == "max":
-                        x = F.adaptive_max_pool2d(x, (1, 1))
-                        x = torch.flatten(x, 1)
-
-                # Store output for this stage
-                stage_outputs[4] = x
-
-        # Only return a value if we're the leader of the final stage
         if 4 in self.my_stages and self.current_stage_leaders[4] == self.rank:
-            # Save checkpoint after successful forward pass
-            # self._save_stage_checkpoint(4)
-            return x
-
-        # If we get here, we're not responsible for the final output
-        # Return a dummy tensor - in a real system, we'd need proper coordination
-        dummy_output = torch.zeros((1, 1000)).to(self.stage_devices.get(4, "cpu"))
+            try:
+                # If we're not the leader of the previous stage, receive input
+                if 3 not in self.my_stages or self.current_stage_leaders[3] != self.rank:
+                    # Receive metadata first
+                    metadata = torch.zeros(4, dtype=torch.long, device="cpu")
+                    
+                    try:
+                        dist.recv(metadata, src=self.current_stage_leaders[3])
+                        
+                        # Create tensor with the right size
+                        tensor_shape = (metadata[0].item(), metadata[1].item(), 
+                                        metadata[2].item(), metadata[3].item())
+                        
+                        # Create a tensor on CPU first
+                        x_cpu = torch.zeros(tensor_shape, dtype=torch.float32, device="cpu")
+                        
+                        # Receive the actual tensor data
+                        dist.recv(x_cpu, src=self.current_stage_leaders[3])
+                        
+                        # Move to the appropriate device
+                        x = x_cpu.to(self.stage_devices[4])
+                        
+                        # CRITICAL: Ensure gradients are tracked for backward pass
+                        x.requires_grad = True
+                    except Exception as e:
+                        logger.error(f"Rank {self.rank}: Error in stage 4 receiving: {str(e)}")
+                        return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(4, "cpu"))
+                
+                # Process layer 4
+                x = self.layer4(x)
+                
+                # Process final layers - classification
+                x = self.avgpool(x)
+                x = torch.flatten(x, 1)
+                
+                if self.include_top and hasattr(self, 'fc'):
+                    x = self.fc(x)
+                
+                # Store output for this stage
+                stage_outputs[4] = x.clone()
+                
+                # Final stage - return the output
+                return x
+            except Exception as e:
+                logger.error(f"Rank {self.rank}: Error in stage 4 processing: {str(e)}")
+                return torch.zeros((original_batch_size, 10), device=self.stage_devices.get(4, "cpu"))
+        
+        # If this rank is not responsible for the final output, return a dummy tensor
+        # Make sure the dummy tensor has requires_grad=True to avoid backward errors
+        dummy_output = torch.zeros((original_batch_size, 10), device=self.stage_devices.get(0, "cpu") if 0 in self.my_stages else "cpu", requires_grad=True)
         return dummy_output
