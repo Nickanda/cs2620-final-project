@@ -7,6 +7,9 @@ class Scale(nn.Module):
     """
     A layer that learns a set of scale (gamma) and shift (beta) parameters.
     This mimics the Keras Scale layer after BatchNormalization.
+
+    Args:
+        num_features (int): Number of input features/channels to scale.
     """
 
     def __init__(self, num_features):
@@ -15,6 +18,15 @@ class Scale(nn.Module):
         self.beta = nn.Parameter(torch.zeros(num_features))
 
     def forward(self, x):
+        """
+        Apply scaling and shifting to the input tensor.
+
+        Args:
+            x (torch.Tensor): Input tensor of shape (batch, channels, height, width).
+
+        Returns:
+            torch.Tensor: Scaled and shifted tensor of the same shape as input.
+        """
         # x is assumed to be in (batch, channels, height, width) order.
         return x * self.gamma.view(1, -1, 1, 1) + self.beta.view(1, -1, 1, 1)
 
@@ -24,12 +36,16 @@ class Bottleneck(nn.Module):
 
     def __init__(self, inplanes, planes, stride=1, downsample=None, device=None):
         """
+        Initialize a bottleneck block for ResNet.
+
         Args:
-            inplanes: Number of input channels.
-            planes: Number of channels for the intermediate conv layers.
-            stride: Stride for the 3x3 convolution.
-            downsample: A downsampling layer for the shortcut branch, if needed.
-            device: The device to place this module on.
+            inplanes (int): Number of input channels.
+            planes (int): Number of channels for the intermediate convolutional layers.
+            stride (int, optional): Stride for the 3x3 convolution. Default is 1.
+            downsample (nn.Module, optional): A downsampling layer for the shortcut branch,
+                used when changing dimensions or stride. Default is None.
+            device (torch.device, optional): The device to place this module on (cuda, mps, or cpu).
+                Default is None.
         """
         super(Bottleneck, self).__init__()
         eps = 1.1e-5  # epsilon used in BatchNorm layers
@@ -65,6 +81,15 @@ class Bottleneck(nn.Module):
             self.to(device)
 
     def forward(self, x):
+        """
+        Forward pass through the bottleneck block.
+
+        Args:
+            x (torch.Tensor): Input tensor.
+
+        Returns:
+            torch.Tensor: Output tensor after processing through the bottleneck block.
+        """
         # Move input to this module's device if needed
         if self.device is not None and x.device != self.device:
             x = x.to(self.device)
