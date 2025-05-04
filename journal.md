@@ -35,6 +35,48 @@ To develop a fault-tolerant distributed system for training large ResNet models 
 | May 1       | Integration & Optimization    | Training orchestration, performance monitoring, async checkpointing            |
 | May 2       | Final Testing & Documentation | Multi-failure testing, network partition handling, documentation               |
 
+![ex_model](images/ex_model.png)
+
+See above for a graphic showing what we're interesting in producing. In particular, our proof of concept "large ML model" was a Resnet training on CIFAR-10 (more details below). 
+
+## Motivation
+
+We first outline our motivations and goals briefly. First, modern deep learning models are giant:
+
+![model_sizes](images/model_sizes.png)
+
+The above shows some state of the art model sizes, which are in the trillions of parameters from both several large companies in the U.S. and China (various sources). Training a 1 trillion parameter model consumes enough electricity to power 20K American homes [Epoch AI]. Each model also cost at least hundreds of millions of dollars to train--we don't want to be midway training a model and encounter an issue that is unrecoverable i.e., we don't want to have to start over from scratch. 
+
+![scaling_laws](images/scaling_laws.png)
+People are building large models because they believe in neural network scaling laws which describe how model loss (a measure of their performance and fit to training data) moothly decreases with increased parameters and compute. This finding has led to the creation of increasingly large “foundation” models (above, described earlier).
+
+
+![scale_capabilities](images/scale_capabilities.png)
+
+There has been evidence that lower loss actually leads to real-world gains in capabilities like in the above. Claims that such models, trained with increasing numbers of floating point operations (FLOPs) are more capable are backed up by empirical observations. Oftentimes people claim these new skills are "emergent" where they suddenly can come to existence at a certain scale--a certain amount of compute, model size in parameter count, and data exposure during training. For instance, here is an excerpted figure from an early work in this space showing increased performance at modular arithmetic, phonetic transliteration, unscrambling words, and question-answering in Persian. This increase in model size has brought a surge in computational demand and billion-dollar data center project--people in industry are training increasingly large models and they need distirbuted computing to do so. 
+
+These models cannot fit on a single device. They are so big that they must be trained across multiple GPUs, which can be prone to failure. For instance, when Llama 3 was being trained, the team described a series of 419 unplanned interruptions occuring across 54 days (quite a high rate) because hardware, especially when running on maximum capacity for days to weeks or longer on end can break or become unreliable, as seen in the following Table from their paper: 
+
+![table5-llama](images/table5-llama.png)
+
+Already, models are several times as large as this, meaning they have to fit on even more hardware units. Also, to be cost and energy efficient, these distributed, large training runs must be fault tolerant––they should be robust to any of the run’s devices failing at any point during training
+
+## Our Implementation 
+
+We partition an ML model across computing units, in which up to 2 servers can fail. We first realize naive model parallelism doesn’t leverage models’ sequential dependency, so we parallelize training to take advantage of the sequential nature of the back-propagation algorithm key to training deep learning. We also implement fault-tolerance so if any device fails (set of colored blocks), the model recovers and continues training as in the following:
+
+![parallel](images/parallel.png)
+
+Finally we train a resnet architecture, in particular ResNet 50 and 101 which are 23.9 M and 42.8 M parameter deep learning architectures, respectively. These models have residual connections and are most commonly used for image analysis tasks (see excerpt of the architecture i.e. one of the "skip" connections btw models below):
+
+![resnet](images/resnet.png)
+
+In particular, we train ResNet on CIFAR-10 a classic computer vision dataset consisting of 60000 color images (32 x 32) in 10 classes evenly distributed (please find an excerpt below):
+
+![cifar-10](images/cifar-10.png)
+
+In summary, we are able to succesfully train our models in a distributed way. We documented our journey creating this code base, which is described in our Readme as follows:
+
 ## April 24, 2025 - Thursday
 
 **Project Kickoff**

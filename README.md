@@ -6,6 +6,9 @@ A distributed implementation of ResNet50 with fault tolerance capabilities for r
 
 This project provides a robust implementation of a distributed ResNet50 model that can continue training even when one or more nodes fail. It distributes the ResNet architecture across multiple machines and implements failover mechanisms to ensure training continuity despite node failures.
 
+![ex_model](images/ex_model.png)
+
+
 ### Key Features
 
 - **Model Parallelism**: Splits ResNet50 across multiple nodes/devices
