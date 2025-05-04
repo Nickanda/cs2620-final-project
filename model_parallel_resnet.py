@@ -191,11 +191,15 @@ class FaultTolerantModelParallelResNet(nn.Module):
         Build one stage of the ResNet model.
 
         Args:
-            block: Block type.
-            planes: Number of channels for the intermediate layers.
-            blocks: Number of blocks to stack.
-            stride: Stride for the first block.
-            device: Device to place this layer on.
+            block (nn.Module): Block type (e.g., Bottleneck).
+            planes (int): Number of channels for the intermediate layers.
+            blocks (int): Number of blocks to stack in this stage.
+            stride (int, optional): Stride for the first block. Default is 1.
+            device (torch.device, optional): Device to place this layer on (cuda, mps, or cpu).
+                Default is None.
+
+        Returns:
+            nn.Sequential: A sequence of blocks forming a stage of the ResNet model.
         """
         downsample = None
         if stride != 1 or self.inplanes != planes * block.expansion:
@@ -226,7 +230,12 @@ class FaultTolerantModelParallelResNet(nn.Module):
         return nn.Sequential(*layers)
 
     def _start_heartbeat_monitoring(self):
-        """Start heartbeat mechanism for fault detection"""
+        """
+        Start heartbeat mechanism for fault detection.
+
+        This method initializes and starts a background thread that continuously monitors
+        heartbeats from all ranks to detect node failures in the distributed system.
+        """
         self.heartbeat_thread = threading.Thread(
             target=self._heartbeat_loop, daemon=True
         )
@@ -234,7 +243,15 @@ class FaultTolerantModelParallelResNet(nn.Module):
         logger.info(f"Rank {self.rank}: Started heartbeat monitoring thread")
 
     def _heartbeat_loop(self):
-        """Loop to send and monitor heartbeats with improved error handling for Apple Silicon"""
+        """
+        Loop to send and monitor heartbeats with improved error handling for Apple Silicon.
+
+        This method runs in a background thread and performs two main tasks:
+        1. Sends heartbeats from this rank to all other ranks
+        2. Monitors heartbeats from other ranks to detect node failures
+
+        It uses CPU tensors for heartbeats to avoid potential issues with MPS/CUDA devices.
+        """
         error_count = 0
         max_errors = 10
 
@@ -380,7 +397,16 @@ class FaultTolerantModelParallelResNet(nn.Module):
                 time.sleep(self.heartbeat_interval)
 
     def _handle_leader_failure(self, stage_idx):
-        """Handle a leader failure by promoting a backup and taking over all stages from failed rank"""
+        """
+        Handle a leader failure by promoting a backup and taking over all stages from failed rank.
+
+        This method is called when a leader node failure is detected. It promotes the first
+        available backup to become the new leader for the stage and reconstructs any necessary
+        model components.
+
+        Args:
+            stage_idx (int): The index of the stage whose leader has failed.
+        """
         # Get the stage configuration
         stage_config = self.stage_config[stage_idx]
         failed_leader_rank = self.current_stage_leaders[stage_idx]

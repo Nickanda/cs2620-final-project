@@ -14,7 +14,23 @@ logger = logging.getLogger("fault_tolerant_resnet")
 def init_fault_tolerant_distributed(
     master_addr=None, master_port=None, backend=None, timeout_minutes=10
 ):
-    """Initialize fault-tolerant distributed environment"""
+    """
+    Initialize fault-tolerant distributed environment for PyTorch distributed training.
+
+    Args:
+        master_addr (str, optional): IP address of the master node. If None, uses localhost
+            or the MASTER_ADDR environment variable. Default is None.
+        master_port (int, optional): Port for the master node. If None, uses 29500 or the
+            MASTER_PORT environment variable. Default is None.
+        backend (str, optional): The distributed backend to use ('nccl', 'gloo', etc.).
+            If None, selects 'nccl' for CUDA devices and 'gloo' otherwise. Default is None.
+        timeout_minutes (int, optional): Timeout in minutes for distributed operations.
+            Default is 10.
+
+    Raises:
+        Exception: If distributed initialization fails due to network, firewall, or
+            configuration issues.
+    """
     # Set environment variables for distributed training
     if master_addr:
         os.environ["MASTER_ADDR"] = master_addr
@@ -72,11 +88,16 @@ def get_fault_tolerant_stage_config(world_size):
     """
     Generate a stage configuration for fault tolerance based on world size.
 
+    Creates a configuration that assigns leaders and backup nodes for each stage
+    of the ResNet model, optimizing for fault tolerance within the available nodes.
+
     Args:
-        world_size: Total number of machines/nodes available
+        world_size (int): Total number of machines/nodes available in the distributed system.
 
     Returns:
-        A stage configuration list with leaders and backups
+        list: A stage configuration list with leader and backup assignments for each stage.
+            Each element is a dict with 'leader' (containing 'rank' and 'device') and
+            'backups' (list of dicts with 'rank' and 'device') for one stage.
     """
     # Need at least 5 machines for full redundancy (one per stage)
     if world_size < 5:

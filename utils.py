@@ -22,16 +22,21 @@ def resnet50_fault_tolerant(
     Constructs a fault-tolerant model-parallel ResNet-50 model.
 
     Args:
-        pretrained: If True, load pretrained ImageNet weights (if available).
-        num_classes: Number of classes for the final classification.
-        include_top: Whether to include the final fully-connected layer.
-        pooling: Optional pooling mode for feature extraction when include_top is False.
-                 Options are 'avg' or 'max'.
-        stage_config: Configuration for each stage's leader and backup nodes
-        checkpoint_dir: Directory for storing checkpoints for fault recovery.
+        pretrained (bool): If True, load pretrained ImageNet weights (if available).
+            Default is False.
+        num_classes (int): Number of classes for the final classification layer.
+            Default is 1000.
+        include_top (bool): Whether to include the final fully-connected layer.
+            Default is True.
+        pooling (str, optional): Pooling mode for feature extraction when include_top is False.
+            Options are 'avg' or 'max'. Default is None.
+        stage_config (list, optional): Configuration for each stage's leader and backup nodes.
+            Format is list of dicts with 'leader' and 'backups' keys. Default is None.
+        checkpoint_dir (str, optional): Directory for storing checkpoints for fault recovery.
+            Default is None.
 
     Returns:
-        An instance of the fault-tolerant ResNet50 model.
+        FaultTolerantModelParallelResNet: An instance of the fault-tolerant ResNet50 model.
     """
     # Deferred import to avoid circular dependencies
     from model_parallel_resnet import FaultTolerantModelParallelResNet
@@ -57,12 +62,17 @@ def resnet50_fault_tolerant(
 
 def evaluate_fault_tolerance(model, test_loader, device):
     """
-    Evaluate the model with simulated failures.
+    Evaluate the model with simulated failures during the testing phase.
+    Simulates a failure of the stage 2 leader at batch 10 to test failover mechanisms.
 
     Args:
-        model: The fault-tolerant ResNet model
-        test_loader: Data loader for test data
-        device: Device to use for evaluation
+        model (FaultTolerantModelParallelResNet): The fault-tolerant ResNet model to evaluate.
+        test_loader (torch.utils.data.DataLoader): Data loader for test data, providing batches
+            of input images and target labels.
+        device (torch.device): Device to use for evaluation (cuda, mps, or cpu).
+
+    Returns:
+        float: The test accuracy as a percentage (0-100).
     """
     model.eval()
     correct = 0

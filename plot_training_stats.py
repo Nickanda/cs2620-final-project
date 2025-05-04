@@ -6,6 +6,20 @@ import numpy as np
 def parse_log_file(file_path):
     """
     Parse the log file to extract epoch, loss, and accuracy data.
+
+    Extracts training and validation statistics from the log file by searching for
+    patterns that match epoch numbers, loss values, and accuracy percentages.
+
+    Args:
+        file_path (str): Path to the log file containing training and validation data.
+
+    Returns:
+        tuple: A tuple containing five lists:
+            - epochs (list): List of epoch numbers
+            - train_losses (list): List of training loss values for each epoch
+            - train_accuracies (list): List of training accuracy percentages for each epoch
+            - val_losses (list): List of validation loss values for each epoch
+            - val_accuracies (list): List of validation accuracy percentages for each epoch
     """
     epochs = []
     train_losses = []
@@ -49,7 +63,20 @@ def plot_training_stats(
     epochs, train_losses, train_accuracies, val_losses, val_accuracies
 ):
     """
-    Create and save plots for losses and accuracies.
+    Create and save plots for training and validation losses and accuracies.
+
+    Generates two separate plots: one for losses and one for accuracies.
+    The plots are saved as PNG files in the current directory.
+
+    Args:
+        epochs (list): List of epoch numbers.
+        train_losses (list): List of training loss values for each epoch.
+        train_accuracies (list): List of training accuracy percentages for each epoch.
+        val_losses (list): List of validation loss values for each epoch.
+        val_accuracies (list): List of validation accuracy percentages for each epoch.
+
+    Returns:
+        None: The function saves the plots as files but doesn't return any values.
     """
     # Set a nice looking style
     plt.style.use("ggplot")
@@ -86,6 +113,16 @@ def plot_training_stats(
 def main():
     """
     Main function to parse the log and generate plots.
+
+    This function reads the training log file, extracts the training and validation
+    statistics, and generates visualizations for the model's performance metrics.
+    It acts as the entry point for the plotting script.
+
+    Args:
+        None: The function uses a hardcoded log file path.
+
+    Returns:
+        None: The function prints information to stdout and generates plot files.
     """
     log_file = "tmp.txt"
 
