@@ -73,13 +73,15 @@ if __name__ == "__main__":
 
     # If simulate-failure flag is on, exit the process after 20 seconds
     if args.simulate_failure:
-        logger.info("Simulate-failure flag is on. Process will exit after 20 seconds...")
+        logger.info(
+            "Simulate-failure flag is on. Process will exit after 20 seconds..."
+        )
         import threading
-        
+
         def exit_process():
             logger.info("Simulated failure: Exiting process now...")
             os._exit(0)
-            
+
         # Schedule process exit after 20 seconds
         threading.Timer(20.0, exit_process).start()
 
@@ -169,7 +171,7 @@ if __name__ == "__main__":
                 progress_bar = tqdm(
                     train_loader, desc=f"Epoch {epoch + 1}/{args.epochs}", leave=True
                 )
-                
+
                 # Wrap in try-except to handle potential communication errors during node failure
                 try:
                     for batch_idx, (data, target) in enumerate(progress_bar):
@@ -185,29 +187,37 @@ if __name__ == "__main__":
                         try:
                             data, target = data.to(device), target.to(device)
                             output = model(data)
-                            
+
                             # Check if we're in recovery mode from a node failure
-                            if hasattr(model, '_in_recovery') and model._in_recovery:
+                            if hasattr(model, "_in_recovery") and model._in_recovery:
                                 if not recovery_mode:
-                                    logger.info(f"Rank {args.rank}: Training in recovery mode after node failure")
+                                    logger.info(
+                                        f"Rank {args.rank}: Training in recovery mode after node failure"
+                                    )
                                     recovery_mode = True
-                            
+
                             # Ensure output and target have compatible shapes for cross entropy loss
                             if output.dim() != 2 or output.size(1) != 10:
-                                logger.warning(f"Rank {args.rank}: Output has incorrect shape {output.shape}, expected [batch_size, 10]")
+                                logger.warning(
+                                    f"Rank {args.rank}: Output has incorrect shape {output.shape}, expected [batch_size, 10]"
+                                )
                                 # Skip the batch but don't fail the epoch
                                 continue
-                            
+
                             if target.dim() != 1:
-                                logger.warning(f"Rank {args.rank}: Target has incorrect shape {target.shape}, expected 1D tensor")
+                                logger.warning(
+                                    f"Rank {args.rank}: Target has incorrect shape {target.shape}, expected 1D tensor"
+                                )
                                 if target.dim() > 1:
                                     target = target.reshape(-1)
                                 else:
                                     continue
-                                    
+
                             # Make sure batch sizes match
                             if output.size(0) != target.size(0):
-                                logger.warning(f"Rank {args.rank}: Batch size mismatch: output {output.size(0)}, target {target.size(0)}")
+                                logger.warning(
+                                    f"Rank {args.rank}: Batch size mismatch: output {output.size(0)}, target {target.size(0)}"
+                                )
                                 # Skip this batch
                                 continue
 
@@ -223,19 +233,25 @@ if __name__ == "__main__":
                                 total += target.size(0)
                                 correct += predicted.eq(target).sum().item()
                                 batches_processed += 1
-                                
+
                                 # If we were in recovery mode but completed a successful backward pass,
                                 # we can exit recovery mode
-                                if recovery_mode and hasattr(model, '_in_recovery'):
+                                if recovery_mode and hasattr(model, "_in_recovery"):
                                     model._in_recovery = False
                                     recovery_mode = False
-                                    logger.info(f"Rank {args.rank}: Exiting recovery mode, training resumed successfully")
-                                    
+                                    logger.info(
+                                        f"Rank {args.rank}: Exiting recovery mode, training resumed successfully"
+                                    )
+
                             except Exception as e:
-                                logger.error(f"Rank {args.rank}: Error in backward pass: {str(e)}")
+                                logger.error(
+                                    f"Rank {args.rank}: Error in backward pass: {str(e)}"
+                                )
                                 # Enable recovery mode for next iteration
                                 if not recovery_mode:
-                                    logger.info(f"Rank {args.rank}: Entering recovery mode after error")
+                                    logger.info(
+                                        f"Rank {args.rank}: Entering recovery mode after error"
+                                    )
                                     model._in_recovery = True
                                     recovery_mode = True
                                 continue
@@ -244,20 +260,26 @@ if __name__ == "__main__":
                             checkpoint_interval = 10 if recovery_mode else 100
                             if batch_idx % checkpoint_interval == 0:
                                 model.save_checkpoints()
-                                
+
                         except Exception as e:
-                            logger.error(f"Rank {args.rank}: Error in forward pass: {str(e)}")
+                            logger.error(
+                                f"Rank {args.rank}: Error in forward pass: {str(e)}"
+                            )
                             # Enable recovery mode for next iteration
                             if not recovery_mode:
-                                logger.info(f"Rank {args.rank}: Entering recovery mode after error")
+                                logger.info(
+                                    f"Rank {args.rank}: Entering recovery mode after error"
+                                )
                                 model._in_recovery = True
                                 recovery_mode = True
                             continue
-                            
+
                 except Exception as e:
-                    logger.error(f"Rank {args.rank}: Error during training loop: {str(e)}")
+                    logger.error(
+                        f"Rank {args.rank}: Error during training loop: {str(e)}"
+                    )
                     # Don't abort the epoch - try to continue with the next one
-                    
+
                 # Print epoch statistics
                 if batches_processed > 0:
                     accuracy = 100.0 * correct / total if total > 0 else 0
@@ -266,8 +288,10 @@ if __name__ == "__main__":
                         f"Rank {args.rank}, Epoch {epoch}: Loss = {avg_loss:.3f}, Accuracy = {accuracy:.2f}%, Batches = {batches_processed}"
                     )
                 else:
-                    logger.warning(f"Rank {args.rank}, Epoch {epoch}: No batches processed successfully")
-                
+                    logger.warning(
+                        f"Rank {args.rank}, Epoch {epoch}: No batches processed successfully"
+                    )
+
                 # Save checkpoints at the end of each epoch
                 model.save_checkpoints()
 

@@ -36,7 +36,7 @@ def init_fault_tolerant_distributed(
     # Remove interface specification that may be causing issues
     # if "GLOO_SOCKET_IFNAME" in os.environ:
     #     del os.environ["GLOO_SOCKET_IFNAME"]
-    
+
     # # Set Gloo buffer allocation timeout to a higher value
     # if "GLOO_DEVICE_TRANSPORT" not in os.environ:
     #     os.environ["GLOO_DEVICE_TRANSPORT"] = "tcp"
@@ -47,7 +47,7 @@ def init_fault_tolerant_distributed(
             backend = "nccl"  # Use NCCL for NVIDIA GPUs
         else:
             backend = "gloo"  # Use Gloo for CPU and MPS (Apple Silicon)
-    
+
     logger.info(f"Using '{backend}' backend for distributed training")
 
     # Initialize process group with extended timeout for fault detection
@@ -93,7 +93,7 @@ def get_fault_tolerant_stage_config(world_size):
             default_device = "mps"
         else:
             default_device = "cpu"
-            
+
         return [
             {"leader": {"rank": 0, "device": default_device}, "backups": []},
             {"leader": {"rank": 0, "device": default_device}, "backups": []},
