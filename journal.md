@@ -50,7 +50,6 @@ The above shows some state of the art model sizes, which are in the trillions of
 ![scaling_laws](images/scaling_laws.png)
 People are building large models because they believe in neural network scaling laws which describe how model loss (a measure of their performance and fit to training data) moothly decreases with increased parameters and compute. This finding has led to the creation of increasingly large “foundation” models (above, described earlier).
 
-
 ![scale_capabilities](images/scale_capabilities.png)
 
 There has been evidence that lower loss actually leads to real-world gains in capabilities like in the above. Claims that such models, trained with increasing numbers of floating point operations (FLOPs) are more capable are backed up by empirical observations. Oftentimes people claim these new skills are "emergent" where they suddenly can come to existence at a certain scale--a certain amount of compute, model size in parameter count, and data exposure during training. For instance, here is an excerpted figure from an early work in this space showing increased performance at modular arithmetic, phonetic transliteration, unscrambling words, and question-answering in Persian. This increase in model size has brought a surge in computational demand and billion-dollar data center project--people in industry are training increasingly large models and they need distributed computing to do so.
@@ -76,7 +75,6 @@ In particular, we train ResNet on CIFAR-10 a classic computer vision dataset con
 ![cifar-10](images/cifar-10.png)
 
 In summary, we are able to successfully train our models in a distributed way. We documented our journey creating this code base, which is described below.
-
 
 ## Results
 
