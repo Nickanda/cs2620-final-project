@@ -1,3 +1,32 @@
+"""
+utils.py
+
+Convenience helpers for the fault-tolerant, stage-parallel ResNet stack
+----------------------------------------------------------------------
+
+This file contains two high-level utilities that make it easy to **build**
+and **validate** the model-parallel ResNet defined in
+`model_parallel_resnet.py`:
+
+1. **`resnet50_fault_tolerant(...)`**
+   • Instantiates a `FaultTolerantModelParallelResNet`
+     pre-configured as a ResNet-50 (layers [3, 4, 6, 3]).  
+   • Accepts options for ImageNet pre-training, custom class counts,
+     inclusion/exclusion of the top FC head, alternate pooling strategies,
+     an explicit `stage_config`, and a checkpoint directory.
+
+2. **`evaluate_fault_tolerance(model, test_loader, device)`**
+   • Runs a forward-only evaluation loop while **artificially killing the
+     stage-2 leader at batch 10** to exercise the heartbeat / fail-over
+     machinery.  
+   • After the induced failure it reports overall test accuracy and logs
+     recovery progress.
+
+Both functions emit detailed messages through the module-level logger
+(`fault_tolerant_resnet`) to enable watching checkpointing, promotion of
+backups, and other events unfold in real time.
+"""
+
 import os
 import time
 import torch
