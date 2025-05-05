@@ -37,37 +37,37 @@ To develop a fault-tolerant distributed system for training large ResNet models 
 
 ![ex_model](images/ex_model.png)
 
-See above for a graphic showing what we're interesting in producing. In particular, our proof of concept "large ML model" was a Resnet training on CIFAR-10 (more details below). 
+See above for a graphic showing what we're interesting in producing. In particular, our proof of concept "large ML model" was a Resnet trained to do multi-category image classification on CIFAR-10 (more details below).
 
 ## Motivation
 
-We first outline our motivations and goals briefly. First, modern deep learning models are giant:
+We begin by outlining our motivations and goals briefly. First, modern deep learning models are giant (estimates from various sources, including speculation, but for sure trillions of parameters is accurate):
 
 ![model_sizes](images/model_sizes.png)
 
-The above shows some state of the art model sizes, which are in the trillions of parameters from both several large companies in the U.S. and China (various sources). Training a 1 trillion parameter model consumes enough electricity to power 20K American homes [Epoch AI]. Each model also cost at least hundreds of millions of dollars to train--we don't want to be midway training a model and encounter an issue that is unrecoverable i.e., we don't want to have to start over from scratch. 
+The above shows some state of the art model sizes, which are in the trillions of parameters from several large companies in the U.S. and China. Training a 1 trillion parameter model consumes enough electricity to power 20K American homes [Epoch AI]. Each model also costs at least hundreds of millions of dollars to train--we don't want to be midway training a model and encounter an issue that is unrecoverable i.e., we don't want to have to start over from scratch. 
 
 ![scaling_laws](images/scaling_laws.png)
-People are building large models because they believe in neural network scaling laws which describe how model loss (a measure of their performance and fit to training data) moothly decreases with increased parameters and compute. This finding has led to the creation of increasingly large “foundation” models (above, described earlier).
+People are building large models because they believe in neural network scaling laws which describe how model loss (a measure of their performance and fit to training data) smoothly decreases with increased parameters and compute. This finding has led to the creation of increasingly large “foundation” models (above, described earlier).
 
 
 ![scale_capabilities](images/scale_capabilities.png)
 
-There has been evidence that lower loss actually leads to real-world gains in capabilities like in the above. Claims that such models, trained with increasing numbers of floating point operations (FLOPs) are more capable are backed up by empirical observations. Oftentimes people claim these new skills are "emergent" where they suddenly can come to existence at a certain scale--a certain amount of compute, model size in parameter count, and data exposure during training. For instance, here is an excerpted figure from an early work in this space showing increased performance at modular arithmetic, phonetic transliteration, unscrambling words, and question-answering in Persian. This increase in model size has brought a surge in computational demand and billion-dollar data center project--people in industry are training increasingly large models and they need distirbuted computing to do so. 
+There has been evidence that lower loss actually leads to real-world gains in capabilities like in the above. Claims that such models, trained with increasing numbers of floating point operations (FLOPs) are more capable are backed up by empirical observations. Oftentimes people claim these new skills are "emergent" where they suddenly exist at a certain scale--i.e., a certain amount of compute, model size in terms of parameter count, and data exposure during training. For instance, here is an excerpted figure from an early work in this space showing increased performance at modular arithmetic, phonetic transliteration, unscrambling words, and question-answering in Persian emerging at a particular number of training FLOPs. This phenomenon has motivated an increase in model size has brought a surge in computational demand and billion-dollar data center projects--industry players are training increasingly large models and they need distributed computing to do so.
 
-These models cannot fit on a single device. They are so big that they must be trained across multiple GPUs, which can be prone to failure. For instance, when Llama 3 was being trained, the team described a series of 419 unplanned interruptions occuring across 54 days (quite a high rate) because hardware, especially when running on maximum capacity for days to weeks or longer on end can break or become unreliable, as seen in the following Table from their paper: 
+These models cannot fit on a single device. They are so big that they must be trained across multiple GPUs, which can each be prone to failure. For instance, when Llama 3 (Meta) was trained, the team described a series of 419 unplanned interruptions occurring across 54 days (quite a high rate) because hardware, especially when running on maximum capacity for days to weeks or longer on end can break or become unreliable, as seen in the following Table from their paper:
 
 ![table5-llama](images/table5-llama.png)
 
-Already, models are several times as large as this, meaning they have to fit on even more hardware units. Also, to be cost and energy efficient, these distributed, large training runs must be fault tolerant––they should be robust to any of the run’s devices failing at any point during training
+Already, models are several times as Llama 3 (the above), meaning they fit on even more hardware units. Although hardware has also improved in the iterim, the fundamental issue of distributed training persists. Also, to be cost and energy efficient, these distributed, large training runs must be fault tolerant––they should be robust to any of the run’s devices failing at any point during training (possibly multiple times).
 
-## Our Implementation 
+## Our Implementation
 
-We partition an ML model across computing units, in which up to 2 servers can fail. We first realize naive model parallelism doesn’t leverage models’ sequential dependency, so we parallelize training to take advantage of the sequential nature of the back-propagation algorithm key to training deep learning. We also implement fault-tolerance so if any device fails (set of colored blocks), the model recovers and continues training as in the following:
+We partition an ML model across computing units, in which up to 2 servers can fail. We also recognized that naive model parallelism doesn’t leverage models’ sequential dependency, so we parallelize training to take advantage of the sequential nature of the back-propagation algorithm in deep learning. We further implement fault-tolerance so if any device fails (set of colored blocks), the model recovers and continues training as in the following:
 
 ![parallel](images/parallel.png)
 
-Finally we train a resnet architecture, in particular ResNet 50 and 101 which are 23.9 M and 42.8 M parameter deep learning architectures, respectively. These models have residual connections and are most commonly used for image analysis tasks (see excerpt of the architecture i.e. one of the "skip" connections btw models below):
+Finally we train a Resnet architecture, in particular ResNet 50 and 101 which are 23.9 M and 42.8 M parameter deep learning architectures, respectively (because of resource constraints). These models have residual connections and are most commonly used for image analysis tasks (see excerpt of the architecture i.e. one of the "skip" connections btw models below). They have input and output layers but are characterized by convolutional (i.e., conv) and pooling layers with inductive biases suitable for pattern recognition in images, capable of tasks like detecting edges and corners:
 
 ![resnet](images/resnet.png)
 
@@ -75,29 +75,29 @@ In particular, we train ResNet on CIFAR-10 a classic computer vision dataset con
 
 ![cifar-10](images/cifar-10.png)
 
-In summary, we are able to succesfully train our models in a distributed way. We documented our journey creating this code base, which is described in our Readme as follows:
+In summary, in this project, motivated by increasingly large ML model training runs, we succesfully train our models across GPUs in a a distributed, parallel, and fault tolerant way. We documented our journey creating this code base, which has an organization described in our Readme. We recorded what we did day-to-day, which can be found below:
 
 ## April 24, 2025 - Thursday
 
 **Project Kickoff**
 
-- Conducted initial planning meeting to outline project requirements with team (Alex, Maya, Raj, and myself)
+- Conducted initial planning meeting to outline project requirements
 - Defined core objectives: implement a fault-tolerant model parallel ResNet architecture capable of continuing execution even if one or more nodes fail during training
-- Set up GitHub repository "ft-model-parallel" and invited team members as collaborators
-- Created initial project structure with directories for source code, checkpoints, and data
+- Set up GitHub repository
+- Created initial project structure with directories for source code and data
 - Created README.md with project overview, goals, and setup instructions
 
 **Environment Setup:**
 
 - Installed PyTorch 2.1.0 with CUDA 12.1 support across all development machines
-- Set up four NVIDIA A100 GPUs in our primary test cluster for distributed testing
-- Created requirements.txt file with essential packages
+- Set up GPUs (Apple ones and NVIDIA A100s on the Harvard cluster) in our primary test cluster for distributed testing
+- Created requirements.txt file with initial essential packages
 - Configured logging system to track distributed operations across nodes
 
 **Key Decisions:**
 
 - Decided to use PyTorch's distributed module for communication after comparing it with alternatives like Ray and Horovod
-- Chose ResNet as our base architecture for model parallelism implementation due to its modular structure and well-defined stages
+- Chose ResNet as our base architecture for model parallelism implementation due to its modular structure and well-defined stages and estiblished nature
 - Agreed on a stage-based approach to model parallelism, splitting ResNet into 5 logical stages:
   1. Initial convolution and pooling
   2. Layer1 (2-3 residual blocks)
@@ -114,7 +114,7 @@ In summary, we are able to succesfully train our models in a distributed way. We
 
 ## April 25, 2025 - Friday
 
-**Basic Implementation Started**
+**Basic Implementation Started (modified slightly after names etc)**
 
 - Started implementing the core model_parallel_resnet.py file with FaultTolerantModelParallelResNet class
 - Implemented device management logic to assign different model stages to specific devices
