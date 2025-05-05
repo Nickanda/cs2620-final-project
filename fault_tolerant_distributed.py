@@ -1,5 +1,5 @@
 """
-fault_tolerant_resnet.py
+fault_tolerant_distributed.py
 
 Utilities for fault-tolerant, multi-node training with PyTorch.
 
