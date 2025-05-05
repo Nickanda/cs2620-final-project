@@ -1,3 +1,33 @@
+"""
+layers.py
+
+Standalone PyTorch implementation of two ResNet-style building blocks:
+
+1. **Scale**
+   • Learns per-channel affine parameters (γ, β) and applies
+     *x ↦ γ·x + β* after a preceding BatchNorm layer—mirroring Keras’s
+     post-BatchNorm *Scale* layer.
+   • Accepts an integer `num_features`, registers the learnable
+     parameters, and reshapes them internally so the forward pass
+     works with `(N, C, H, W)` tensors on CPU, CUDA, or Apple M-series
+     (MPS).
+
+2. **Bottleneck**
+   • Classical three-layer ResNet bottleneck (1×1 → 3×3 → 1×1) with
+     `expansion = 4`.
+   • Each convolution is followed by BatchNorm **and** Scale, then
+     ReLU (except the final 1×1, which omits ReLU before adding shortcut).
+   • Supports `stride`, an optional `downsample` module for dimension
+     matching, and an optional `device` argument to place the entire
+     block (and inputs) on a specific device.
+   • Carries out residual addition plus a tail ReLU, returning an
+     output tensor whose channel dimension is `planes × expansion`.
+
+These components are drop-in replacements for the corresponding parts of
+the original ResNet paper.
+"""
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
