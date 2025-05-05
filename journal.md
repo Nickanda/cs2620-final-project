@@ -45,20 +45,20 @@ We begin by outlining our motivations and goals briefly. First, modern deep lear
 
 ![model_sizes](images/model_sizes.png)
 
-The above shows some state of the art model sizes, which are in the trillions of parameters from several large companies in the U.S. and China. Training a 1 trillion parameter model consumes enough electricity to power 20K American homes [Epoch AI]. Each model also costs at least hundreds of millions of dollars to train--we don't want to be midway training a model and encounter an issue that is unrecoverable i.e., we don't want to have to start over from scratch. 
+The above shows some state of the art model sizes, which are in the trillions of parameters from several large companies in the U.S. and China. Training a 1 trillion parameter model consumes enough electricity to power 20K American homes ([Epoch AI](https://epoch.ai/gradient-updates/how-much-energy-does-chatgpt-use)). Each model also costs at least hundreds of millions of dollars to train--we don't want to be midway training a model and encounter an issue that is unrecoverable i.e., we don't want to have to start over from scratch. 
 
 ![scaling_laws](images/scaling_laws.png)
-People are building large models because they believe in neural network scaling laws which describe how model loss (a measure of their performance and fit to training data) moothly decreases with increased parameters and compute. This finding has led to the creation of increasingly large “foundation” models (above, described earlier).
+People are building large models because they believe in neural network scaling laws which describe how model loss (a measure of their performance and fit to training data) smoothly decreases with increased parameters and compute. This finding has led to the creation of increasingly large “foundation” models (above, described earlier).
 
 ![scale_capabilities](images/scale_capabilities.png)
 
-There has been evidence that lower loss actually leads to real-world gains in capabilities like in the above. Claims that such models, trained with increasing numbers of floating point operations (FLOPs) are more capable are backed up by empirical observations. Oftentimes people claim these new skills are "emergent" where they suddenly can come to existence at a certain scale--a certain amount of compute, model size in parameter count, and data exposure during training. For instance, here is an excerpted figure from an early work in this space showing increased performance at modular arithmetic, phonetic transliteration, unscrambling words, and question-answering in Persian. This increase in model size has brought a surge in computational demand and billion-dollar data center project--people in industry are training increasingly large models and they need distributed computing to do so.
+There has been evidence that lower loss actually leads to real-world gains in capabilities like in the above. Claims that such models, trained with increasing numbers of floating point operations (FLOPs) are more capable are backed up by empirical observations. Oftentimes people claim these new skills are "emergent" where they suddenly can come to existence at a certain scale--a certain amount of compute, model size in parameter count, and data exposure during training. For instance, here is an excerpted figure from an early OpenAI work in this space showing increased performance at modular arithmetic, phonetic transliteration, unscrambling words, and question-answering in Persian. This increase in model size has brought a surge in computational demand and billion-dollar data center projects--people in industry are training increasingly large models and they need distributed computing to do so.
 
 These models cannot fit on a single device. They are so big that they must be trained across multiple GPUs, which each can be prone to failure. For instance, when Llama 3 was being trained, the team described a series of 419 unplanned interruptions occurring across 54 days (quite a high rate) because hardware, especially when running on maximum capacity for days to weeks or longer on end can break or become unreliable, as seen in the following Table from their paper:
 
 ![table5-llama](images/table5-llama.png)
 
-Already, models are several times as Llama 3 (the above), meaning they fit on even more hardware units. Although hardware has also improved in the iterim, the fundamental issue of distributed training persists. Also, to be cost and energy efficient, these distributed, large training runs must be fault tolerant––they should be robust to any of the run’s devices failing at any point during training (possibly multiple times).
+Already, models are several times of Llama 3 (described in the above), meaning they must fit on even more hardware units. Although hardware has also improved in the iterim, the fundamental issue of distributed training persists. Also, to be cost and energy efficient, these distributed, large training runs must be fault tolerant––they should be robust to any of the run’s devices failing at any point during training (possibly multiple times).
 
 ## Our Implementation
 
@@ -66,7 +66,7 @@ We partition an ML model across computing units, in which up to 2 servers can fa
 
 ![parallel](images/parallel.png)
 
-Finally we train a resnet architecture, in particular ResNet 50 and 101 which are 23.9 M and 42.8 M parameter deep learning architectures, respectively. These models have residual connections and are most commonly used for image analysis tasks.  They have input and output layers but are characterized by convolutional (i.e., conv) and pooling layers with inductive biases suitable for pattern recognition in images, capable of tasks like detecting edges and corners (see excerpt of the architecture i.e. one of the "skip" connections btw models below):
+Finally we train a ResNet architecture, in particular ResNet 50 and 101 which are 23.9 M and 42.8 M parameter deep learning architectures, respectively. These models have residual connections and are most commonly used for image analysis tasks.  They have input and output layers as well as characteristic convolutional (i.e., conv) and pooling layers with inductive biases suitable for pattern recognition in images, capable of tasks like detecting edges and corners (see excerpt of the architecture i.e. one of the "skip" connections between model layers below):
 
 ![resnet](images/resnet.png)
 
@@ -102,7 +102,7 @@ Furthermore, we show that our training can continue even after crashing one of t
 
 [![simulation](images/crash_simulation.mp4)](images/crash_simulation.mp4)
 
-We see from the video that after we crash all of the processes assigned to a particular set of layers, our model is still able to continue training by reassigning all of the stages to another set of processes.
+We see from the video that after we crash all of the processes assigned to a particular set of layers, our model is still able to continue training by reassigning all of the stages to another set of processes while the model is being trained across multiple GPUs.
 
 ## April 24, 2025 - Thursday
 
@@ -110,7 +110,7 @@ We see from the video that after we crash all of the processes assigned to a par
 
 - Conducted initial planning meeting to outline project requirements
 - Defined core objectives: implement a fault-tolerant model parallel ResNet architecture capable of continuing execution even if one or more nodes fail during training
-- Set up GitHub repository "ft-model-parallel" and invited team members as collaborators
+- Set up GitHub repository
 - Created initial project structure with directories for source code, checkpoints, and data
 - Created README.md with project overview, goals, and setup instructions
 
