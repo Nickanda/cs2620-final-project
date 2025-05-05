@@ -1,3 +1,53 @@
+"""
+model_parallel_resnet.py
+
+Fault-tolerant, **stage-parallel** ResNet for multi-node training
+----------------------------------------------------------------
+This module defines **`FaultTolerantModelParallelResNet`**, a drop-in replacement
+for a standard ResNet that can be **sharded across machines** (or GPUs) *by
+stage* while automatically recovering from node failures.
+
+Key features
+~~~~~~~~~~~~
+1. **Stage mapping & device placement**
+   • Accepts a *stage_config* that assigns a *leader* rank (and optional
+     backups) plus device for each of the five ResNet stages  
+     *(stem + 4 residual layers).*  
+   • If no config is supplied the class builds a single-node default.
+
+2. **Heartbeat-based fault detection**
+   • Each rank runs a lightweight background thread that broadcasts
+     timestamps every ≃5 s to all other ranks.  
+   • Missed heartbeats (> 3 × interval) trigger `_handle_leader_failure`.
+
+3. **Automatic takeover & recovery**
+   • A live backup promotes itself to leader, loads the most recent
+     on-disk checkpoint (`stage_n_checkpoint.pt`), re-creates any
+     un-instantiated layers, resets activations, and resumes training.  
+   • Failed leaders are demoted to the end of the backup list.
+
+4. **Checkpointing (per stage, on leader only)**
+   • `_save_stage_checkpoint` / `_load_stage_checkpoint` persist each
+     stage’s parameters so that backups can spin up quickly.
+
+5. **Pipeline communication**
+   • Forward pass uses `torch.distributed` *send/recv* (CPU tensors to
+     avoid CUDA/MPS driver quirks) to stream activations between stage
+     leaders.  
+   • Metadata (batch, C, H, W) is sent first to pre-allocate the
+     receiving tensor safely.
+
+6. **ResNet construction helpers**
+   • `_make_layer` builds standard bottleneck stacks with post-BN
+     *Scale* layers (see `layers.py`).  
+   • `_initialize_stage_layers` can lazily create layers when a rank
+     takes over new stages.
+
+7. **Utilities**
+   • Gradient-safe `zero_grad`, memory-cleaning `_reset_activations`,
+     and a public `save_checkpoints()` convenience wrapper.
+"""
+
 import os
 import time
 import threading
