@@ -1,3 +1,27 @@
+"""
+fault_tolerant_resnet.py
+
+Utilities for fault-tolerant, multi-node training with PyTorch.
+
+This module provides:
+
+1. **init_fault_tolerant_distributed(...)**
+   Sets up a `torch.distributed` process group with sensible defaults, extended
+   timeouts, and detailed logging.  It auto-selects an appropriate backend
+   (`nccl` for GPUs, `gloo` otherwise) and highlights common mis-configuration
+   issues.
+
+2. **get_fault_tolerant_stage_config(world_size)**
+   Produces a five-stage pipeline configuration (ResNet’s stem + four blocks)
+   that assigns a *leader* rank and up to two *backup* ranks per stage.  The
+   mapping adapts to the available `world_size`, supports minimal single-machine
+   runs, and prioritizes GPU / MPS devices when present.
+
+Together, these helpers make it easier to launch ResNet training
+jobs that stay alive—even when individual nodes drop—by redistributing work and
+maintaining redundant copies of each stage.
+"""
+
 import os
 import datetime
 import torch
