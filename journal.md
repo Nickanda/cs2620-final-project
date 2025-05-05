@@ -428,3 +428,6 @@ We see from the video that after we crash all of the processes assigned to a par
   - Redistribute workload when nodes fail or new nodes join
   - Adaptive batch sizing based on available resources
   - Priority-based stage assignment for critical model components
+
+## May 3, 2025 - Saturday
+- Ran the models to produce the Results plots below, did so on three Macbook laptops, worked also to run on the Harvard cluster
