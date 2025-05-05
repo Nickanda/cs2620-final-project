@@ -98,7 +98,7 @@ After implementing our system, we observe our final results by how well it compa
 
 These plots show that the model was able to relatively achieve the same level of performance as the original model. We observe that even though there is a slight decrease in the accuracy of the model, this is likely just from random chance that the initialized values were slightly worse for our fault tolerant model.
 
-Furthermore, we show that our training can continue even after crashing one of the processes. We demonstrate this in the video below, where we crash the process 20 seconds into the simulation. The video is below:
+Furthermore, we show that our training can continue even after crashing one of the processes. We demonstrate this in the video below, where we crash the process 20 seconds into the simulation. The video is below (too large to embed, please download to watch):
 
 [![simulation](images/crash_simulation.mp4)](images/crash_simulation.mp4)
 
